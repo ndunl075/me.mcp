@@ -42,18 +42,12 @@ export async function rpc(
   return { status: res.status, body: await res.json() };
 }
 
-/** Calls an MCP tool and returns the parsed JSON text payload plus the raw result. */
+/** Calls an MCP tool and returns its text payload (compact text, not JSON) plus the raw result. */
 export async function tool(path: string, name: string, args: Record<string, unknown> = {}, extra: Record<string, string> = {}) {
   const r = await rpc(path, "tools/call", { name, arguments: args }, extra);
   const result = r.body.result;
   const text: string = result?.content?.[0]?.text ?? "";
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = undefined;
-  }
-  return { status: r.status, result, isError: !!result?.isError, json, text };
+  return { status: r.status, result, isError: !!result?.isError, text };
 }
 
 /** Signs in via the dev login and returns a Cookie header value. */

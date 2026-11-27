@@ -21,29 +21,36 @@ describe("network MCP", () => {
 
   it.each(["carol", "@carol", "CAROL", "@Carol"])("lookup_person(%j) finds the profile", async (handle) => {
     const t = await tool(PATH, "lookup_person", { handle });
-    expect(t.json.found).toBe(true);
-    expect(t.json.handle).toBe("carol");
-    expect(t.json.name).toBe("Carol Netter");
-    expect(t.json.now).toBe("Building a gossip protocol");
-    expect(t.json._note).toContain(NOTE_PREFIX);
+    expect(t.text.startsWith("Carol Netter (@carol) · Distributed systems hacker\n")).toBe(true);
+    expect(t.text).toContain("): Building a gossip protocol");
+    expect(t.text).toContain(NOTE_PREFIX);
+  });
+
+  it("lookup_person returns the same compact text as the person server's get_profile", async () => {
+    const network = await tool(PATH, "lookup_person", { handle: "carol" });
+    const person = await tool("/me/carol/mcp", "get_profile");
+    expect(network.text).toBe(person.text);
   });
 
   it("lookup_person reports not found", async () => {
     const t = await tool(PATH, "lookup_person", { handle: "@ghost" });
-    expect(t.json).toMatchObject({ found: false, handle: "ghost" });
+    expect(t.text).toContain("No me.mcp profile for @ghost");
+    expect(t.text).toContain(NOTE_PREFIX);
   });
 
   it("lookup_person does not reveal unpublished profiles", async () => {
     const t = await tool(PATH, "lookup_person", { handle: "hiddenhank" });
-    expect(t.json.found).toBe(false);
+    expect(t.text).toContain("No me.mcp profile for @hiddenhank");
+    expect(t.text).not.toContain("Hidden Hank");
   });
 
   it("search_people finds published people only", async () => {
     const t = await tool(PATH, "search_people", { query: "gossip" });
-    expect(t.json.people.map((p: { handle: string }) => p.handle)).toEqual(["carol"]);
-    expect(t.json.people[0].profile_url).toBe("http://localhost/me/carol");
+    expect(t.text).toContain("@carol · Carol Netter · Distributed systems hacker");
+    expect(t.text).toContain("http://localhost/me/carol");
     const none = await tool(PATH, "search_people", { query: "secretword" });
-    expect(none.json.people).toEqual([]);
+    expect(none.text).toContain("No matches.");
+    expect(none.text).not.toContain("@hiddenhank");
   });
 
   it("GET behaviour mirrors the person endpoint", async () => {

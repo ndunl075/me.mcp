@@ -28,7 +28,7 @@ describe("owner key", () => {
     const r = await rpc(PATH, "tools/list", undefined, auth(key));
     const names = r.body.result.tools.map((t: { name: string }) => t.name);
     expect(names).toContain("update_profile");
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(8);
   });
 
   it("no key or a wrong key does not", async () => {
@@ -50,22 +50,23 @@ describe("owner key", () => {
       const t = await tool(PATH, "update_profile", { now: "hacked" }, headers);
       expect(t.isError || t.result === undefined).toBe(true);
     }
-    expect((await tool(PATH, "get_now")).json.now).toBe("Original now");
+    expect((await tool(PATH, "get_now")).text).toContain("): Original now");
   });
 
   it("update_profile rejects javascript: URLs", async () => {
     const t = await tool(PATH, "update_profile", { links: [{ label: "x", url: "javascript:alert(1)" }] }, auth(key));
     expect(t.isError).toBe(true);
-    expect(t.json.error).toBe("Invalid input");
+    expect(t.text).toContain("Invalid input: links.0.url");
     const after = await tool(PATH, "get_now");
-    expect(after.json.now).toBe("Original now");
+    expect(after.text).toContain("): Original now");
   });
 
   it("a valid update changes get_now", async () => {
     const t = await tool(PATH, "update_profile", { now: "Shipping the test suite" }, auth(key));
     expect(t.isError).toBe(false);
-    expect(t.json).toMatchObject({ ok: true, updated: ["now"], now: "Shipping the test suite" });
+    expect(t.text).toContain("Updated: now.\nNow: Shipping the test suite");
+    expect(t.text).toContain("Page: http://localhost/me/dave");
     const after = await tool(PATH, "get_now");
-    expect(after.json.now).toBe("Shipping the test suite");
+    expect(after.text).toContain("): Shipping the test suite");
   });
 });

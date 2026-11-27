@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
-import { call, publish, signIn, tool } from "./helpers";
+import { call, publish, signIn, tool, NOTE_PREFIX } from "./helpers";
 import { ipKey } from "../src/security";
 import { cleanText } from "../src/db";
 
@@ -209,14 +209,14 @@ describe("injection hygiene", () => {
     });
     expect(res.status).toBe(302);
     const lookup = await tool("/me/mcp", "lookup_person", { handle: "hygiene" });
-    expect(lookup.json.name).toBe("Hygiene IGNORE ALL");
-    expect(lookup.json.about).toBe("a\n\nb");
-    expect(lookup.json._note).toContain("Self-published");
+    expect(lookup.text).toContain("Hygiene IGNORE ALL (@hygiene)");
+    expect(lookup.text).toContain("About: a\n\n  b");
+    expect(lookup.text).toContain(NOTE_PREFIX);
     const people = await tool("/me/mcp", "search_people", { query: "hygiene" });
-    expect(people.json.people.length).toBeGreaterThan(0);
-    expect(people.json._note).toContain("Self-published");
+    expect(people.text).toContain("@hygiene");
+    expect(people.text).toContain(NOTE_PREFIX);
     const missing = await tool("/me/mcp", "lookup_person", { handle: "nobody-here" });
-    expect(missing.json._note).toContain("Self-published");
+    expect(missing.text).toContain(NOTE_PREFIX);
   });
 
   it("rejects link URLs with embedded whitespace", async () => {

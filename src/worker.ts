@@ -1,6 +1,7 @@
 import { createApp } from "./index";
 import { type Env, basePathOf, url } from "./env";
 import { rateLimit, withSecurityHeaders } from "./security";
+import { refreshStaleProfiles } from "./activity";
 
 // Worker entry point. Request-wide concerns (headers, rate limits) belong here; routes live in index.tsx.
 let cached: { base: string; app: ReturnType<typeof createApp> } | undefined;
@@ -14,5 +15,9 @@ export default {
     // Served at the root of a workers.dev URL: send visitors to the app's base path.
     if (base && new URL(req.url).pathname === "/") return withSecurityHeaders(Response.redirect(url(env, "/"), 302), env);
     return withSecurityHeaders(await cached.app.fetch(req, env, ctx), env);
+  },
+  // Cron Trigger (wrangler.jsonc `triggers`): refresh the stalest few published profiles' activity.
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(refreshStaleProfiles(env));
   },
 } satisfies ExportedHandler<Env>;
