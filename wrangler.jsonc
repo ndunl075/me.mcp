@@ -23,8 +23,8 @@
     {
       "binding": "DB",
       "database_name": "me-mcp",
-      // Replace with the id printed by `npx wrangler d1 create me-mcp`
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // Production database for the hosted me.mcp. Self-hosting? Replace with the id from `npx wrangler d1 create me-mcp`.
+      "database_id": "1c8ab990-569c-41aa-bfe0-b4c2d58a0bac",
       "migrations_dir": "migrations"
     }
   ]
