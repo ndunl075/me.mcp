@@ -104,6 +104,26 @@ async function gh<T>(path: string, token: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * GitHub's homepage/blog fields are free text. Accept an http(s) URL, or a bare host like "example.com" (-> https);
+ * anything else (javascript:, mailto:, data:, ...) or over-long returns null so callers can fall back.
+ */
+export function normalizeHttpUrl(raw: string): string | null {
+  const v = raw.trim();
+  let candidate = v;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) {
+    if (!/^[a-z0-9.-]+(:\d+)?([/?#]\S*)?$/i.test(v)) return null;
+    candidate = `https://${v}`;
+  }
+  try {
+    const u = new URL(candidate);
+    if ((u.protocol !== "https:" && u.protocol !== "http:") || candidate.length > 300) return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetches the signed-in user plus a starter profile (links + top repos) to prefill the editor. */
 export async function fetchGithubStarter(
   token: string,
@@ -116,13 +136,14 @@ export async function fetchGithubStarter(
 
   const links: Link[] = [{ label: "GitHub", url: user.html_url }];
   if (user.twitter_username) links.push({ label: "X", url: `https://x.com/${user.twitter_username}` });
-  if (user.blog) links.push({ label: "Website", url: /^https?:\/\//.test(user.blog) ? user.blog : `https://${user.blog}` });
+  const site = user.blog ? normalizeHttpUrl(user.blog) : null;
+  if (site) links.push({ label: "Website", url: site });
 
   const projects: Project[] = repos
     .filter((r) => !r.fork && r.name.toLowerCase() !== user.login.toLowerCase())
     .sort((a, b) => b.stargazers_count - a.stargazers_count)
     .slice(0, 5)
-    .map((r) => ({ name: r.name, url: r.homepage || r.html_url, description: (r.description ?? "").slice(0, 300) }));
+    .map((r) => ({ name: r.name, url: (r.homepage && normalizeHttpUrl(r.homepage)) || r.html_url, description: (r.description ?? "").slice(0, 300) }));
 
   // Repos arrive sorted by last push, so the first non-fork repo is what they touched most recently.
   const latest = repos.find((r) => !r.fork && r.name.toLowerCase() !== user.login.toLowerCase());

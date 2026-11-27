@@ -55,7 +55,16 @@ export function ProfilePage({ ctx, p, stats, isOwner, welcome = false }: { ctx: 
               <a class="btn btn-sm btn-light" href={`${ctx.base}/edit`}>
                 Make it better with your AI
               </a>
+              <a class="btn btn-sm btn-light" href={`${ctx.base}/edit`}>
+                Edit
+              </a>
             </div>
+            {/* One-time state: drop the flag so a reload shows the normal owner bar. */}
+            <script
+              dangerouslySetInnerHTML={{
+                __html: "try{var u=new URL(location.href);u.searchParams.delete('welcome');history.replaceState(null,'',u.pathname+u.search+u.hash)}catch(e){}",
+              }}
+            />
           </div>
         )}
         {isOwner && !welcome && (

@@ -6,7 +6,8 @@ import {
   ProfileInput,
   RESERVED,
   LIMITS,
-  createDraft,
+  type Link,
+  type Project,
   deleteProfile,
   getProfile,
   getProfileByGithubId,
@@ -87,7 +88,7 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     if (RESERVED.has(handle)) return next(); // e.g. /edit is registered further down
     const s = c.get("session");
     const p = await getProfile(c.env.DB, handle);
-    const isOwner = !!s && s.login === handle;
+    const isOwner = !!s && !!p && s.login === handle && p.github_id === s.id;
     if (!p || (!p.published && !isOwner)) return notFound(c, handle);
     const stats = await getStats(c.env.DB, handle, p.calls_total);
     c.header("Cache-Control", "no-store");
@@ -138,25 +139,17 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
 
     if (RESERVED.has(handle)) return c.text(`Sorry — "${handle}" is a reserved path on me.mcp.`, 400);
 
-    const existing = await getProfileByGithubId(c.env.DB, user.id);
-    if (existing && existing.handle !== handle) {
-      // GitHub username changed: drop the old handle's row and start fresh under the new one.
-      await deleteProfile(c.env.DB, existing.handle);
-    }
-    let created = false;
-    if (!existing || existing.handle !== handle) {
-      created = await createAndPublish(c.env.DB, {
-        handle,
-        github_id: user.id,
-        name: user.name ?? user.login,
-        avatar_url: user.avatar_url,
-        bio: user.bio ?? "",
-        location: user.location ?? "",
-        links,
-        projects,
-        now: recent ? nowFromRepo(recent.name, recent.description) : "",
-      });
-    }
+    const created = await signIn(c.env.DB, {
+      handle,
+      github_id: user.id,
+      name: user.name ?? user.login,
+      avatar_url: user.avatar_url,
+      bio: user.bio ?? "",
+      location: user.location ?? "",
+      links,
+      projects,
+      recent,
+    });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, user.id), cookieOpts(30 * 86400));
     return c.redirect(url(c.env, `/${handle}${created ? "?welcome=1" : ""}`));
   });
@@ -167,19 +160,17 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     const handle = (c.req.query("login") ?? "dev").toLowerCase().replace(/[^a-z0-9-]/g, "");
     const id = parseInt((await sha256(handle)).replace(/[^0-9]/g, "").slice(0, 9) || "1", 10);
     if (!handle || RESERVED.has(handle)) return c.text("Bad login", 400);
-    const created = (await getProfile(c.env.DB, handle))
-      ? false
-      : await createAndPublish(c.env.DB, {
-          handle,
-          github_id: id,
-          name: handle,
-          avatar_url: `https://github.com/${handle}.png`,
-          bio: "",
-          location: "",
-          links: [{ label: "GitHub", url: `https://github.com/${handle}` }],
-          projects: [],
-          now: nowFromRepo("me.mcp", "Setting up my MCP server."),
-        });
+    const created = await signIn(c.env.DB, {
+      handle,
+      github_id: id,
+      name: handle,
+      avatar_url: `https://github.com/${handle}.png`,
+      bio: "",
+      location: "",
+      links: [{ label: "GitHub", url: `https://github.com/${handle}` }],
+      projects: [],
+      recent: { name: "me.mcp", description: "Setting up my MCP server." },
+    });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, id), cookieOpts(30 * 86400));
     return c.redirect(url(c.env, `/${handle}${created ? "?welcome=1" : ""}`));
   });
@@ -194,7 +185,9 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
   const requireOwner = async (c: { get: (k: "session") => AppEnv["Variables"]["session"]; env: Env }) => {
     const s = c.get("session");
     if (!s) return null;
-    return getProfile(c.env.DB, s.login);
+    const p = await getProfile(c.env.DB, s.login);
+    // Ownership is the GitHub account, not just the login: a renamed-away account's session must not reach a reused handle.
+    return p && p.github_id === s.id ? p : null;
   };
 
   app.get("/edit", async (c) => {
@@ -297,17 +290,85 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
 
 /** Seed `now` from the most recently pushed repo so get_now is useful from the first call. */
 function nowFromRepo(name: string, description: string): string {
-  return (description ? `Recently working on ${name}: ${description}` : `Recently working on ${name}.`).slice(0, LIMITS.now);
+  return description ? `Recently working on ${name}: ${description}` : `Recently working on ${name}.`;
 }
 
-/** First sign-in: create the profile from GitHub data and publish it immediately. Returns whether a row was created. */
-async function createAndPublish(db: D1Database, d: Parameters<typeof createDraft>[1] & { now: string }): Promise<boolean> {
-  // createDraft is a no-op if the handle row already exists; never publish a row we didn't create.
-  if (await getProfile(db, d.handle)) return false;
-  const { now, ...draft } = d;
-  await createDraft(db, draft);
-  await saveProfile(db, d.handle, now ? { now } : {}, true);
-  return true;
+interface Seed {
+  handle: string;
+  github_id: number;
+  name: string;
+  avatar_url: string;
+  bio: string;
+  location: string;
+  links: Link[];
+  projects: Project[];
+  recent: { name: string; description: string } | null;
+}
+
+/**
+ * GitHub-sourced data is untrusted. Run every seeded field through the same ProfileInput validators the editor
+ * uses (control/zero-width/bidi stripping, length caps, http(s)-only URLs). Values are pre-truncated so valid data
+ * isn't rejected for length; invalid links/projects are dropped individually instead of failing the sign-in.
+ */
+function sanitizeSeed(d: Seed) {
+  const S = ProfileInput.shape;
+  const text = (schema: { safeParse(v: unknown): { success: boolean; data?: unknown } }, v: string, max: number, fallback = "") => {
+    const r = schema.safeParse(v.slice(0, max));
+    return r.success ? (r.data as string) : fallback;
+  };
+  const links = d.links
+    .slice(0, LIMITS.links)
+    .map((l) => S.links.element.safeParse({ label: l.label.slice(0, 60), url: l.url }))
+    .flatMap((r) => (r.success ? [r.data] : []));
+  const projects = d.projects
+    .slice(0, LIMITS.projects)
+    .map((pr) => S.projects.element.safeParse({ name: pr.name.slice(0, 80), url: pr.url, description: pr.description.slice(0, 300) }))
+    .flatMap((r) => (r.success ? [r.data] : []));
+  const candidate = {
+    name: text(S.name, d.name, LIMITS.name, d.handle),
+    headline: text(S.headline, d.bio, LIMITS.headline),
+    location: text(S.location, d.location, LIMITS.location),
+    bio: "",
+    now: d.recent ? text(S.now, nowFromRepo(d.recent.name, d.recent.description), LIMITS.now) : "",
+    about: "",
+    contact: "",
+    links,
+    projects,
+  };
+  const parsed = ProfileInput.safeParse(candidate);
+  const fields = parsed.success ? parsed.data : { ...candidate, name: d.handle, headline: "", location: "", now: "", links: [], projects: [] };
+  return {
+    ...fields,
+    avatar_url: S.links.element.shape.url.safeParse(d.avatar_url).success ? d.avatar_url : "",
+  };
+}
+
+/**
+ * Sign-in for a GitHub identity. Ensures the handle row belongs to this github_id (a row held by a different
+ * github_id is stale: that account no longer has this login, so it is replaced rather than inherited), then
+ * creates and publishes a new profile in one INSERT. Returns true only if this request inserted the row.
+ */
+async function signIn(db: D1Database, d: Seed): Promise<boolean> {
+  const byId = await getProfileByGithubId(db, d.github_id);
+  if (byId && byId.handle !== d.handle) {
+    // GitHub username changed: drop the old handle's row and start fresh under the new one.
+    await deleteProfile(db, byId.handle);
+  }
+  const byHandle = byId && byId.handle === d.handle ? byId : await getProfile(db, d.handle);
+  if (byHandle) {
+    if (byHandle.github_id === d.github_id) return false;
+    // Same handle, different GitHub account: the previous owner renamed away. Never hand their profile to the new owner.
+    await deleteProfile(db, d.handle);
+  }
+  const f = sanitizeSeed(d);
+  const res = await db
+    .prepare(
+      `INSERT OR IGNORE INTO profiles (handle, github_id, published, name, avatar_url, headline, location, bio, now, about, contact, links, projects)
+       VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(d.handle, d.github_id, f.name, f.avatar_url, f.headline, f.location, f.bio, f.now, f.about, f.contact, JSON.stringify(f.links), JSON.stringify(f.projects))
+    .run();
+  return res.meta.changes > 0;
 }
 
 function profileMarkdown(env: Env, p: Profile): string {
