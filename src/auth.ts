@@ -105,7 +105,9 @@ async function gh<T>(path: string, token: string): Promise<T> {
 }
 
 /** Fetches the signed-in user plus a starter profile (links + top repos) to prefill the editor. */
-export async function fetchGithubStarter(token: string): Promise<{ user: GithubUser; links: Link[]; projects: Project[] }> {
+export async function fetchGithubStarter(
+  token: string,
+): Promise<{ user: GithubUser; links: Link[]; projects: Project[]; recent: { name: string; description: string } | null }> {
   const user = await gh<GithubUser>("/user", token);
   const repos = await gh<{ name: string; html_url: string; homepage: string | null; description: string | null; fork: boolean; stargazers_count: number }[]>(
     `/users/${user.login}/repos?per_page=100&sort=pushed`,
@@ -122,5 +124,9 @@ export async function fetchGithubStarter(token: string): Promise<{ user: GithubU
     .slice(0, 5)
     .map((r) => ({ name: r.name, url: r.homepage || r.html_url, description: (r.description ?? "").slice(0, 300) }));
 
-  return { user, links, projects };
+  // Repos arrive sorted by last push, so the first non-fork repo is what they touched most recently.
+  const latest = repos.find((r) => !r.fork && r.name.toLowerCase() !== user.login.toLowerCase());
+  const recent = latest ? { name: latest.name, description: (latest.description ?? "").replace(/\s+/g, " ").trim().slice(0, 300) } : null;
+
+  return { user, links, projects, recent };
 }

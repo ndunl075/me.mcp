@@ -11,7 +11,7 @@ function ago(sqlite: string): string {
   return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function ProfilePage({ ctx, p, stats, isOwner }: { ctx: Ctx; p: Profile; stats: Stats; isOwner: boolean }) {
+export function ProfilePage({ ctx, p, stats, isOwner, welcome = false }: { ctx: Ctx; p: Profile; stats: Stats; isOwner: boolean; welcome?: boolean }) {
   const page = `${ctx.publicUrl}/${p.handle}`;
   const mcp = `${page}/mcp`;
   const name = p.name || p.handle;
@@ -37,7 +37,28 @@ export function ProfilePage({ ctx, p, stats, isOwner }: { ctx: Ctx; p: Profile; 
       head={<link rel="alternate" type="text/markdown" href={`${page}/llms.txt`} />}
     >
       <div class="wrap page">
-        {isOwner && (
+        {isOwner && welcome && (
+          <div class="owner-bar welcome">
+            <div class="wl-head">
+              <b>You're live.</b> Anyone can now add you to their AI with this URL:
+            </div>
+            <div class="wl-url">
+              <code>{mcp}</code>
+              <button class="btn btn-sm btn-dark" data-copy={mcp} data-toast="Server URL copied">
+                <CopyIcon /> Copy
+              </button>
+            </div>
+            <div class="wl-actions">
+              <a class="btn btn-sm btn-dark" href={tweet} target="_blank" rel="noopener">
+                <XIcon /> Share on X
+              </a>
+              <a class="btn btn-sm btn-light" href={`${ctx.base}/edit`}>
+                Make it better with your AI
+              </a>
+            </div>
+          </div>
+        )}
+        {isOwner && !welcome && (
           <div class="owner-bar">
             {p.published ? <span>✓ Your server is live.</span> : <span>Draft — only you can see this page.</span>}
             <span class="sp"></span>

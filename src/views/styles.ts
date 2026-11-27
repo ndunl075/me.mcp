@@ -245,6 +245,12 @@ a.proj:hover{border-color:#d6d6d6}
 .bar .track{background:var(--line-2);border-radius:3px}
 .owner-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--soft);border-radius:12px;padding:10px 12px;margin-bottom:24px;font-size:14px}
 .owner-bar .sp{flex:1}
+.owner-bar.welcome{flex-direction:column;align-items:stretch;gap:12px;padding:16px;background:var(--soft)}
+.owner-bar .wl-head{font-size:15px}
+.owner-bar .wl-url{display:flex;gap:8px;align-items:center;background:#fff;border-radius:10px;padding:6px 6px 6px 12px}
+.owner-bar .wl-url code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.owner-bar .wl-actions{display:flex;gap:8px;flex-wrap:wrap}
+.hero .consent{margin:14px 0 0;font-size:13px;color:var(--muted)}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:all .2s;pointer-events:none;z-index:50}
 .toast.show{opacity:1;transform:translateX(-50%)}
 /* hero chip: real avatars + cycling handle */

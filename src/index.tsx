@@ -5,6 +5,7 @@ import {
   type Profile,
   ProfileInput,
   RESERVED,
+  LIMITS,
   createDraft,
   deleteProfile,
   getProfile,
@@ -90,7 +91,8 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     if (!p || (!p.published && !isOwner)) return notFound(c, handle);
     const stats = await getStats(c.env.DB, handle, p.calls_total);
     c.header("Cache-Control", "no-store");
-    return c.html(<ProfilePage ctx={ctxOf(c)} p={p} stats={stats} isOwner={isOwner} />);
+    const welcome = isOwner && p.published && c.req.query("welcome") === "1";
+    return c.html(<ProfilePage ctx={ctxOf(c)} p={p} stats={stats} isOwner={isOwner} welcome={welcome} />);
   });
 
   app.get("/:handle/llms.txt", async (c) => {
@@ -131,7 +133,7 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     if (!code || !state || state !== expected) return c.text("Sign-in expired. Please try again.", 400);
 
     const token = await exchangeCode(c.env, code, url(c.env, "/auth/callback"));
-    const { user, links, projects } = await fetchGithubStarter(token);
+    const { user, links, projects, recent } = await fetchGithubStarter(token);
     const handle = user.login.toLowerCase();
 
     if (RESERVED.has(handle)) return c.text(`Sorry — "${handle}" is a reserved path on me.mcp.`, 400);
@@ -141,8 +143,9 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
       // GitHub username changed: drop the old handle's row and start fresh under the new one.
       await deleteProfile(c.env.DB, existing.handle);
     }
+    let created = false;
     if (!existing || existing.handle !== handle) {
-      await createDraft(c.env.DB, {
+      created = await createAndPublish(c.env.DB, {
         handle,
         github_id: user.id,
         name: user.name ?? user.login,
@@ -151,11 +154,11 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
         location: user.location ?? "",
         links,
         projects,
+        now: recent ? nowFromRepo(recent.name, recent.description) : "",
       });
     }
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, user.id), cookieOpts(30 * 86400));
-    const p = await getProfile(c.env.DB, handle);
-    return c.redirect(url(c.env, p?.published ? `/${handle}` : "/edit"));
+    return c.redirect(url(c.env, `/${handle}${created ? "?welcome=1" : ""}`));
   });
 
   // Local development only: sign in as anyone without GitHub.
@@ -163,20 +166,22 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     if (c.env.DEV_LOGIN !== "1") return c.notFound();
     const handle = (c.req.query("login") ?? "dev").toLowerCase().replace(/[^a-z0-9-]/g, "");
     const id = parseInt((await sha256(handle)).replace(/[^0-9]/g, "").slice(0, 9) || "1", 10);
-    if (!(await getProfile(c.env.DB, handle))) {
-      await createDraft(c.env.DB, {
-        handle,
-        github_id: id,
-        name: handle,
-        avatar_url: `https://github.com/${handle}.png`,
-        bio: "",
-        location: "",
-        links: [{ label: "GitHub", url: `https://github.com/${handle}` }],
-        projects: [],
-      });
-    }
+    if (!handle || RESERVED.has(handle)) return c.text("Bad login", 400);
+    const created = (await getProfile(c.env.DB, handle))
+      ? false
+      : await createAndPublish(c.env.DB, {
+          handle,
+          github_id: id,
+          name: handle,
+          avatar_url: `https://github.com/${handle}.png`,
+          bio: "",
+          location: "",
+          links: [{ label: "GitHub", url: `https://github.com/${handle}` }],
+          projects: [],
+          now: nowFromRepo("me.mcp", "Setting up my MCP server."),
+        });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, id), cookieOpts(30 * 86400));
-    return c.redirect(url(c.env, "/edit"));
+    return c.redirect(url(c.env, `/${handle}${created ? "?welcome=1" : ""}`));
   });
 
   app.get("/auth/logout", (c) => {
@@ -288,6 +293,21 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
   });
 
   return app;
+}
+
+/** Seed `now` from the most recently pushed repo so get_now is useful from the first call. */
+function nowFromRepo(name: string, description: string): string {
+  return (description ? `Recently working on ${name}: ${description}` : `Recently working on ${name}.`).slice(0, LIMITS.now);
+}
+
+/** First sign-in: create the profile from GitHub data and publish it immediately. Returns whether a row was created. */
+async function createAndPublish(db: D1Database, d: Parameters<typeof createDraft>[1] & { now: string }): Promise<boolean> {
+  // createDraft is a no-op if the handle row already exists; never publish a row we didn't create.
+  if (await getProfile(db, d.handle)) return false;
+  const { now, ...draft } = d;
+  await createDraft(db, draft);
+  await saveProfile(db, d.handle, now ? { now } : {}, true);
+  return true;
 }
 
 function profileMarkdown(env: Env, p: Profile): string {
