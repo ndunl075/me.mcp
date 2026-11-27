@@ -49,7 +49,7 @@ describe("stats", () => {
     expect(n).toBeGreaterThan(0);
     const html = await (await call("/me/frank")).text();
     expect(html).toContain("Frank");
-    // The stats block renders the total as text; match it between tags to avoid incidental digits.
-    expect(html).toMatch(new RegExp(`>\\s*${n}\\s*<`));
+    // The "all time" tile specifically (the "this week" tile can show the same number): <b>N</b> followed by its label.
+    expect(html).toMatch(new RegExp(`<b>\\s*${n}\\s*</b>\\s*<span>\\s*all time\\s*</span>`));
   });
 });

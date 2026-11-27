@@ -146,6 +146,14 @@ describe("item cleaning", () => {
     expect(cleanItem({ source: "blog", kind: "post", title: "t", url: "https://x.example/", ts: "garbage" }, NOW)).toBeNull();
     expect(cleanItem({ source: "blog", kind: "post", title: "t", url: "https://x.example/", ts: "2099-01-01T00:00:00Z" }, NOW)!.ts).toBe("2026-11-26T12:00:00Z");
   });
+
+  it.each(["-000001-01-01T00:00:00Z", "0000-01-01T00:00:00Z", "1969-12-31T23:59:59Z", -1, "-271821-04-20T00:00:00Z"])("rejects a date before 1970: %j", (ts) => {
+    expect(cleanItem({ source: "blog", kind: "post", title: "t", url: "https://x.example/", ts }, NOW)).toBeNull();
+  });
+
+  it("accepts the epoch itself", () => {
+    expect(cleanItem({ source: "blog", kind: "post", title: "t", url: "https://x.example/", ts: 0 }, NOW)!.ts).toBe("1970-01-01T00:00:00Z");
+  });
 });
 
 describe("GitHub events", () => {

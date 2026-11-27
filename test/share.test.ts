@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { call, publish, signIn, unpublish } from "./helpers";
+import { getCardVersion, saveCard } from "../src/cards";
 
 // ---- a structurally valid PNG of any size (the Worker checks signature, IHDR dimensions and IEND, not pixel data) ----
 
@@ -158,6 +159,23 @@ describe("POST /edit/card", () => {
   });
 });
 
+describe("saveCard ownership check", () => {
+  it("writes when github_id matches or is omitted, refuses (writing nothing) when it doesn't", async () => {
+    const cookie = await signIn("ownercheck");
+    await publish(cookie);
+    const row = await env.DB.prepare("SELECT github_id FROM profiles WHERE handle = 'ownercheck'").first<{ github_id: number }>();
+    const bytes = png();
+    expect(await saveCard(env.DB, "ownercheck", bytes, "v-wrong", row!.github_id + 1)).toBe(false);
+    expect(await getCardVersion(env.DB, "ownercheck")).toBeNull();
+    expect(await saveCard(env.DB, "ownercheck", bytes, "v-right", row!.github_id)).toBe(true);
+    expect(await getCardVersion(env.DB, "ownercheck")).toBe("v-right");
+    expect(await saveCard(env.DB, "ownercheck", bytes, "v-open")).toBe(true); // no id: no check (backward compatible)
+    expect(await getCardVersion(env.DB, "ownercheck")).toBe("v-open");
+    expect(await saveCard(env.DB, "ownercheck", bytes, "v-hijack", row!.github_id + 1)).toBe(false);
+    expect(await getCardVersion(env.DB, "ownercheck")).toBe("v-open");
+  });
+});
+
 describe("GET /:handle/card.png", () => {
   it("serves the default brand card when the profile has none", async () => {
     const res = await call("/me/ivan/card.png");
@@ -173,6 +191,17 @@ describe("GET /:handle/card.png", () => {
     const landingRes = await call("/me/card.png");
     expect(landingRes.headers.get("cache-control")).toBe("public, max-age=3600");
     expect(new Uint8Array(await landingRes.arrayBuffer())).toEqual(b);
+  });
+
+  it("the brand card's ETag is derived from its bytes, not hardcoded", async () => {
+    const res = await call("/me/card.png");
+    const etag = res.headers.get("etag")!;
+    expect(etag).toMatch(/^"brand-[0-9a-f]{16}"$/);
+    expect(etag).not.toBe('"brand-1"');
+    expect((await call("/me/ivan/card.png")).headers.get("etag")).toBe(etag); // same image, same tag
+    const again = await call("/me/card.png");
+    expect(again.headers.get("etag")).toBe(etag); // stable
+    expect(new Uint8Array(await res.arrayBuffer()).byteLength).toBeGreaterThan(1000);
   });
 
   it("answers conditional requests for the default card with 304", async () => {

@@ -47,8 +47,10 @@ describe("owner key", () => {
 
   it("update_profile cannot be called without the key or with a wrong one", async () => {
     for (const headers of [{}, auth("memcp_wrong")]) {
+      // Not registered without the owner key, so the SDK reports it as unknown.
       const t = await tool(PATH, "update_profile", { now: "hacked" }, headers);
-      expect(t.isError || t.result === undefined).toBe(true);
+      expect(t.isError).toBe(true);
+      expect(t.text).toBe("MCP error -32602: Tool update_profile not found");
     }
     expect((await tool(PATH, "get_now")).text).toContain("): Original now");
   });
