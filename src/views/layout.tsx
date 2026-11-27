@@ -142,7 +142,7 @@ function Footer({ ctx }: { ctx: Ctx }) {
     <footer class="wrap">
       <div class="footer">
         <div>
-          <Logo base={ctx.base} /> <div style="margin-top:8px">Open source. Free forever. Built by Frontier Digital.</div>
+          <Logo base={ctx.base} /> <div style="margin-top:8px">Open source. Free forever. Built by Frontier Digital Labs.</div>
         </div>
         <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
           <a href={ctx.repoUrl}>GitHub</a>
