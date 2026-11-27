@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { call, signIn, tool } from "./helpers";
+import { cardPng } from "./png";
 import { githubStub, oauthSignIn, refreshActivity, withFetch } from "./oauth";
 import { relativeDay } from "../src/views/profile";
 
@@ -70,6 +71,7 @@ describe("sign-in does not fetch activity itself", () => {
     const html = await (await call("/me/zoe", { headers: { Cookie: cookie } })).text();
     expect(html).toContain("Fetching your activity");
     expect(html).toContain('"/me/edit/refresh"');
+    expect(html).toContain("ac.abort()},10000"); // 10 s timeout; on abort the fetching note is hidden
     const anon = await (await call("/me/zoe")).text();
     expect(anon).not.toContain("Fetching your activity");
     expect(anon).not.toContain("/edit/refresh");
@@ -315,5 +317,35 @@ describe("copy", () => {
     const html = await (await call("/me/edit", { headers: { Cookie: cookie } })).text();
     expect(html).not.toContain("Create your MCP server");
     expect(html).toContain("Your server is offline");
+  });
+});
+
+describe("card upload ownership", () => {
+  const upload = (cookie: string, workerEnv?: typeof env) =>
+    call("/me/edit/card", { method: "POST", headers: { Cookie: cookie, "Content-Type": "image/png" }, body: cardPng() as BodyInit }, workerEnv);
+
+  it("is rejected when the profile row's github_id no longer matches the session at write time", async () => {
+    const cookie = await signIn("cardrace");
+    expect((await upload(cookie)).status).toBe(204); // sanity: the owner can upload
+    await db.prepare("DELETE FROM share_cards WHERE handle = 'cardrace'").run();
+
+    // The row is handed to another GitHub account after the route authenticated the owner, right before the card is written.
+    const real = env.DB;
+    const racing = {
+      prepare(sql: string) {
+        const st = real.prepare(sql);
+        if (!sql.includes("INSERT INTO share_cards")) return st;
+        return {
+          bind: (...a: unknown[]) => {
+            const bound = st.bind(...a);
+            return { run: async () => (await real.prepare("UPDATE profiles SET github_id = github_id + 1000000 WHERE handle = 'cardrace'").run(), bound.run()) };
+          },
+        };
+      },
+      batch: (s: D1PreparedStatement[]) => real.batch(s),
+    } as unknown as D1Database;
+    const res = await upload(cookie, { ...env, DB: racing } as typeof env);
+    expect(res.status).toBe(403);
+    expect(await one("SELECT 1 FROM share_cards WHERE handle = 'cardrace'")).toBeNull();
   });
 });

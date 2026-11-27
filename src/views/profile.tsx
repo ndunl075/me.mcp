@@ -387,12 +387,13 @@ export function ProfilePage({
             __html:
               "(function(){var a=document.getElementById('activity-area');if(!a)return;" +
               "var done=function(){var n=document.getElementById('fetching');if(n)n.remove()};" +
-              `fetch(${JSON.stringify(ctx.base + "/edit/refresh")},{method:'POST',credentials:'same-origin'})` +
+              "var ac=new AbortController(),tm=setTimeout(function(){ac.abort()},10000);" +
+              `fetch(${JSON.stringify(ctx.base + "/edit/refresh")},{method:'POST',credentials:'same-origin',signal:ac.signal})` +
               ".then(function(r){return r.ok?r.json():null})" +
               ".then(function(j){if(!j||!j.changed){done();return}" +
-              "return fetch(location.pathname+location.search,{credentials:'same-origin'}).then(function(r){return r.text()}).then(function(t){" +
+              "return fetch(location.pathname+location.search,{credentials:'same-origin',signal:ac.signal}).then(function(r){return r.text()}).then(function(t){" +
               "var d=new DOMParser().parseFromString(t,'text/html').getElementById('activity-area');if(d)a.innerHTML=d.innerHTML;else done()})})" +
-              ".catch(done)})();",
+              ".catch(done).then(function(){clearTimeout(tm)})})();",
           }}
         />
       )}

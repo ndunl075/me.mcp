@@ -331,7 +331,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
     const version = await cardVersionOf(p, ctxOf(c).publicUrl + "/" + p.handle);
     const drawnFrom = c.req.query("v");
     if (drawnFrom !== undefined && drawnFrom !== version) return c.text("Profile changed since this card was drawn.", 409);
-    if (!(await saveCard(c.env.DB, p.handle, png, version))) return c.text("Publish your profile first.", 403);
+    if (!(await saveCard(c.env.DB, p.handle, png, version, p.github_id))) return c.text("Publish your profile first.", 403);
     return c.body(null, 204);
   });
 
