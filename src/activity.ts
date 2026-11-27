@@ -91,12 +91,12 @@ export async function listSources(db: D1Database, handle: string): Promise<Sourc
  */
 const UNLISTED = -1;
 
-/** Owner's on/off switch for one source. Turning one off also removes what it contributed. */
+/** Owner's on/off switch for one source. Turning one off also removes what it contributed. A tombstoned (unlisted) row is left untouched, so it stays hidden. */
 export async function setSourceEnabled(db: D1Database, handle: string, source: SourceId, enabled: boolean): Promise<void> {
   if (!SOURCE_IDS.includes(source)) return;
   const stmts = [
     db
-      .prepare("INSERT INTO sources (handle, source, enabled) VALUES (?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET enabled = excluded.enabled, failures = 0")
+      .prepare("INSERT INTO sources (handle, source, enabled) VALUES (?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET enabled = excluded.enabled, failures = 0 WHERE sources.failures >= 0")
       .bind(handle, source, enabled ? 1 : 0),
   ];
   if (!enabled) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, source));

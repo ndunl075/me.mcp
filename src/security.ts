@@ -95,8 +95,8 @@ function quadToGroups(q: string): [string, string] | null {
 }
 
 /**
- * IPv6 clients control a whole /64, so they are keyed by it. IPv4-mapped (::ffff:a.b.c.d or ::ffff:102:304) and the
- * deprecated IPv4-compatible (::a.b.c.d) forms are keyed as the embedded IPv4 address, so they share a bucket with the
+ * IPv6 clients control a whole /64, so they are keyed by it. IPv4-mapped (::ffff:a.b.c.d or ::ffff:102:304), the
+ * deprecated IPv4-compatible (::a.b.c.d), NAT64 (64:ff9b::a.b.c.d) and SIIT (::ffff:0:a.b.c.d) forms are keyed as the embedded IPv4 address, so they share a bucket with the
  * same client's plain IPv4 and don't all collapse into 0:0:0:0::/64. IPv4 and anything unparseable are used as-is.
  */
 export function ipKey(ip: string): string {
@@ -116,9 +116,11 @@ export function ipKey(ip: string): string {
   if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return ip;
   const n = groups.map((g) => parseInt(g, 16));
   const zeros5 = n.slice(0, 5).every((v) => v === 0);
-  if (zeros5 && (n[5] === 0xffff || (n[5] === 0 && n[6] !== 0))) {
-    return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;
-  }
+  const embedded =
+    (zeros5 && (n[5] === 0xffff || (n[5] === 0 && n[6] !== 0))) || // ::ffff:a.b.c.d (mapped), ::a.b.c.d (compatible)
+    (n[0] === 0x64 && n[1] === 0xff9b && n.slice(2, 6).every((v) => v === 0)) || // 64:ff9b::a.b.c.d (NAT64)
+    (n.slice(0, 4).every((v) => v === 0) && n[4] === 0xffff && n[5] === 0); // ::ffff:0:a.b.c.d (SIIT)
+  if (embedded) return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;
   return n.slice(0, 4).map((v) => v.toString(16)).join(":") + "::/64";
 }
 

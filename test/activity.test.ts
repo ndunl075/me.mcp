@@ -170,9 +170,17 @@ describe("refreshProfileActivity", () => {
     expect((await listSources(env.DB, "tomb")).find((s) => s.source === "bluesky")).toMatchObject({ enabled: false, failures: 0 });
     expect((await listActivity(env.DB, "tomb")).some((x) => x.source === "bluesky")).toBe(false);
 
-    // An enabled source that disappears is simply deleted (nothing to preserve).
-    await setSourceEnabled(env.DB, "tomb", "bluesky", true);
+    // Unlisted again; the owner API cannot un-hide or re-enable a tombstone.
     await refreshProfileActivity(env, "tomb", { fetch: social([]), now: NOW + 4 });
+    await setSourceEnabled(env.DB, "tomb", "bluesky", true);
+    expect(await raw()).toEqual({ enabled: 0, failures: -1 });
+    expect((await listSources(env.DB, "tomb")).some((s) => s.source === "bluesky")).toBe(false);
+
+    // Listed and enabled by the owner, then dropped by GitHub: an enabled source is simply deleted (nothing to preserve).
+    await refreshProfileActivity(env, "tomb", { fetch: social(bsky), now: NOW + 5 });
+    await setSourceEnabled(env.DB, "tomb", "bluesky", true);
+    expect((await listSources(env.DB, "tomb")).find((s) => s.source === "bluesky")?.enabled).toBe(true);
+    await refreshProfileActivity(env, "tomb", { fetch: social([]), now: NOW + 6 });
     expect(await raw()).toBeNull();
   });
 

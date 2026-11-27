@@ -35,38 +35,39 @@ export const RESERVED = new Set([
   "mcp", "new", "edit", "api", "auth", "assets", "logout", "llms.txt", "leaderboard", "explore", "about",
 ]);
 
-// Characters that render as nothing (or reorder text) but are still read by models: control chars, bidi controls,
-// zero-width/invisible operators (the whole U+2060-206F block, assigned or not), BOM, soft hyphen, Khmer inherent vowels,
-// Mongolian free variation selectors, blank "filler" letters (Hangul, braille blank, grapheme joiner),
-// interlinear annotation and musical-symbol format controls.
-const INVISIBLE =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B\u200E\u200F\u202A-\u202E\u2060-\u206F\u2800\u3164\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
-const HAS_INVISIBLE = new RegExp(INVISIBLE.source, "u"); // non-global: safe to .test() repeatedly
+// Characters that render as nothing (or reorder text) but are still read by models. Two groups:
+// - INVISIBLE: control characters, the braille blank and interlinear-annotation controls (not Default_Ignorable).
+// - Everything with the Unicode Default_Ignorable_Code_Point property (3.7k code points: soft hyphen, Hangul/Khmer/
+//   Mongolian fillers and variation selectors, zero-width and bidi controls, the whole U+2060-206F and U+FFF0-FFF8
+//   blocks, musical/shorthand format controls, and the unassigned U+E0000-E0FFF range incl. tags and IVS). Matching the
+//   property rather than a hand-kept list means unassigned code points in those ranges are covered too.
+// Exceptions, kept only in context (IGNORABLE below): an emoji subdivision flag's tag sequence (England, Scotland,
+// Wales), one U+FE0E/FE0F directly after an emoji/symbol or in a keycap, and ZWJ/ZWNJ (see cleanText).
+const INVISIBLE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u2800\uFFF9-\uFFFB]/g;
+const HAS_INVISIBLE = new RegExp(INVISIBLE.source + "|\\p{Default_Ignorable_Code_Point}", "u"); // non-global: safe to .test() repeatedly
 
-// Unicode "tag" characters (U+E0000 block) can carry hidden ASCII, so they are stripped, except the three emoji
-// subdivision flags (England, Scotland, Wales), the only tag sequences emoji actually use.
-const TAGS = /(\u{1F3F4}\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E0073}\u{E0063}\u{E0074}|\u{E0077}\u{E006C}\u{E0073})\u{E007F})|[\u{E0000}-\u{E007F}]/gu;
 // Variation selectors are an invisible one-byte-per-character channel (U+E0100-E01EF carries 240 values after any CJK
-// ideograph, U+FE00-FE0F 16 values after anything), so they are stripped everywhere except the one place a reader sees
-// them: U+FE0E/FE0F (text/emoji presentation) directly after an emoji or symbol, or after a digit/#/* that starts a
-// keycap sequence. Only one selector per base survives. That is at most one bit per emoji, which is not worth chasing.
-// The cost: Japanese names that rely on an ideographic variation sequence (U+E0100 block) lose the variant glyph and
-// render in the font's default form. Linear time: each alternative consumes a bounded number of characters.
-const VS = /(\p{Extended_Pictographic}|[0-9#*](?=\uFE0F\u20E3))[\uFE0E\uFE0F]|[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
+// ideograph, U+FE00-FE0F 16 values after anything), so they are stripped except the one place a reader sees them:
+// U+FE0E/FE0F (text/emoji presentation) directly after an emoji or symbol, or after a digit/#/* that starts a keycap
+// sequence. Only one survives per base: at most one bit per emoji, which is not worth chasing. Tag characters can carry
+// hidden ASCII, so only the three flag sequences emoji actually use survive. The cost: Japanese names relying on an
+// ideographic variation sequence lose the variant glyph and render in the font's default form.
+// One alternation, so each position is decided once: linear time (every alternative consumes a bounded number of characters).
+const IGNORABLE =
+  /(\u{1F3F4}\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E0073}\u{E0063}\u{E0074}|\u{E0077}\u{E006C}\u{E0073})\u{E007F})|((?:\p{Extended_Pictographic}|[0-9#*](?=\uFE0F\u20E3))[\uFE0E\uFE0F])|([\u200C\u200D])|\p{Default_Ignorable_Code_Point}/gu;
 
 /**
  * Normalizes line endings, strips invisible characters, caps blank-line runs at one blank line, trims.
  * ZWJ/ZWNJ (U+200C/D) are kept, since emoji sequences and Persian/Indic scripts need them, but runs of them are
  * dropped (no real text has two in a row; binary-encoded hidden text does). A lone joiner between two letters therefore
  * survives anywhere: that is a known, accepted residual (one bit per position, only where a joiner could be legitimate;
- * see VS above for the other invisible channels).
+ * see IGNORABLE above for the other invisible channels).
  */
 export function cleanText(s: string): string {
   return s
     .replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")
     .replace(INVISIBLE, "")
-    .replace(TAGS, (_, flag) => flag ?? "")
-    .replace(VS, (m, base) => (base ? m : ""))
+    .replace(IGNORABLE, (m, flag, emoji, joiner) => (flag || emoji || joiner ? m : ""))
     .replace(/[\u200C\u200D]{2,}/g, "")
     // Trailing spaces/tabs before a newline. The lookbehind makes each run of blanks start the match only once: without
     // it `[ \t]+\n` rescans the rest of a long blank run from every position (quadratic on "a" + 8,000 spaces + "b").
@@ -91,7 +92,7 @@ const httpUrl = z
   .max(300)
   .refine((u) => {
     try {
-      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u) || /[\u200C\u200D\uFE00-\uFE0F\u{E0000}-\u{E01EF}]/u.test(u)) return false;
+      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u)) return false;
       const p = new URL(u).protocol;
       return p === "https:" || p === "http:";
     } catch {

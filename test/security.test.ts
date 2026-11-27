@@ -136,6 +136,12 @@ describe("rate limiting: classification and enforcement", () => {
     expect(ipKey("::ffff:cb00:7109")).not.toBe(ipKey("::ffff:cb00:710a")); // distinct clients stay distinct
     expect(ipKey("::1.2.3.4")).toBe("1.2.3.4");
     expect(ipKey("::0102:0304")).toBe("1.2.3.4");
+    expect(ipKey("64:ff9b::1.2.3.4")).toBe("1.2.3.4"); // NAT64
+    expect(ipKey("64:ff9b::102:304")).toBe("1.2.3.4");
+    expect(ipKey("::ffff:0:1.2.3.4")).toBe("1.2.3.4"); // SIIT
+    expect(ipKey("0:0:0:0:ffff:0:506:708")).toBe("5.6.7.8");
+    expect(ipKey("64:ff9b::1.2.3.4")).not.toBe(ipKey("64:ff9b::5.6.7.8"));
+    expect(ipKey("64:ff9b:1::1")).toBe("64:ff9b:1:0::/64"); // other 64:ff9b:* space is ordinary IPv6
     // not collapsed into the shared 0:0:0:0::/64 key
     expect(ipKey("::ffff:102:304")).not.toBe(ipKey("::ffff:506:708"));
     // everything else is unchanged
@@ -222,10 +228,58 @@ describe("text cleaning", () => {
     expect(cleanText("a\u2028b")).toBe("a\nb");
   });
 
-  it("stays linear on selector-heavy and joiner-heavy input", () => {
-    const t0 = performance.now();
-    for (const unit of ["\uFE0F", "\u{E0100}", "漢\uFE00", "❤\uFE0F\uFE0F", "1\uFE0F", "a\u200D"]) cleanText(unit.repeat(8000));
-    expect(performance.now() - t0).toBeLessThan(300);
+  it("stays linear on selector-heavy and joiner-heavy input (time ratio between a 100 KB and a 400 KB input)", () => {
+    const best = (text: string) => {
+      let m = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t0 = performance.now();
+        cleanText(text);
+        m = Math.min(m, performance.now() - t0);
+      }
+      return m;
+    };
+    const units = ["\uFE0F", "\u{E0100}", "漢\uFE00", "❤\uFE0F\uFE0F", "1\uFE0F", "a\u200D", "\u200D\u200C", "\u{E0FFF}", "#" + "\u{1F3F4}\u{E0067}", " ", "a" + " ".repeat(9) + "\n"];
+    for (const unit of units) {
+      const small = unit.repeat(Math.ceil(100_000 / unit.length));
+      const large = unit.repeat(Math.ceil(400_000 / unit.length));
+      const t1 = Math.max(best(small), 0.5);
+      const t2 = best(large);
+      // 4x the input: linear is ~4x, quadratic would be ~16x. Absolute cap guards against a uniformly slow engine.
+      expect(t2 / t1, JSON.stringify(unit)).toBeLessThan(9);
+      expect(t2, JSON.stringify(unit)).toBeLessThan(500);
+    }
+  });
+
+  it("every Default_Ignorable code point is stripped, except the documented in-context exceptions", () => {
+    const DI = /^\p{Default_Ignorable_Code_Point}$/u;
+    const survivors: string[] = [];
+    let seen = 0;
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue;
+      const ch = String.fromCodePoint(cp);
+      if (!DI.test(ch)) continue;
+      seen++;
+      // between two letters, where no emoji / keycap / flag context applies
+      if (cleanText("a" + ch + "b") !== "ab") survivors.push(cp.toString(16));
+      // alone and doubled
+      if (cleanText(ch + ch + ch) !== "" && cp !== 0x200c && cp !== 0x200d) survivors.push("x" + cp.toString(16));
+    }
+    expect(seen).toBeGreaterThan(3700);
+    expect(survivors.sort()).toEqual(["200c", "200d"]); // a single joiner between letters (documented residual)
+    // the neighbours the first review found
+    for (const cp of [0x180f, 0xfff0, 0xfff8, 0x1bca0, 0x1bca3, 0xe0080, 0xe00ff, 0xe01f0, 0xe0fff]) {
+      expect(cleanText("a" + String.fromCodePoint(cp) + "b"), cp.toString(16)).toBe("ab");
+    }
+  });
+
+  it("only the intended in-context exceptions survive", () => {
+    const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+    expect(cleanText(england)).toBe(england);
+    expect(cleanText("\u{E0067}\u{E0062}")).toBe("");
+    expect(cleanText("❤\uFE0F")).toBe("❤\uFE0F");
+    expect(cleanText("a\uFE0Fb")).toBe("ab");
+    expect(cleanText("a\u200Db")).toBe("a\u200Db");
+    expect(cleanText("a\u200D\u200Db")).toBe("ab");
   });
 
   it("documented residual: a single joiner between letters survives", () => {
