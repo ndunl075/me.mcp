@@ -19,7 +19,7 @@ describe("network MCP", () => {
     expect(r.body.result.tools.map((t: { name: string }) => t.name).sort()).toEqual(["lookup_person", "search_people"]);
   });
 
-  it.each(["carol", "@carol", "CAROL", "@Carol"])("lookup_person(%j) finds the profile", async (handle) => {
+  it.each(["carol", "@carol", "CAROL", "@Carol", " @carol", "  @Carol  ", "@ carol"])("lookup_person(%j) finds the profile", async (handle) => {
     const t = await tool(PATH, "lookup_person", { handle });
     expect(t.text.startsWith("Carol Netter (@carol) · Distributed systems hacker\n")).toBe(true);
     expect(t.text).toContain("): Building a gossip protocol");

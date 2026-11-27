@@ -40,7 +40,7 @@ export const RESERVED = new Set([
 // Mongolian free variation selectors, blank "filler" letters (Hangul, braille blank, grapheme joiner),
 // interlinear annotation and musical-symbol format controls.
 const INVISIBLE =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u034F\u061C\u115F\u1160\u180E\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u2800\u3164\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B\u200E\u200F\u202A-\u202E\u2060-\u206F\u2800\u3164\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source, "u"); // non-global: safe to .test() repeatedly
 
 // Unicode "tag" characters (U+E0000 block) can carry hidden ASCII, so they are stripped, except the three emoji
@@ -52,7 +52,7 @@ const TAGS = /(\u{1F3F4}\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E007
 // keycap sequence. Only one selector per base survives. That is at most one bit per emoji, which is not worth chasing.
 // The cost: Japanese names that rely on an ideographic variation sequence (U+E0100 block) lose the variant glyph and
 // render in the font's default form. Linear time: each alternative consumes a bounded number of characters.
-const VS = /(\p{Extended_Pictographic}|[0-9#*](?=️⃣))[︎️]|[︀-️\u{E0100}-\u{E01EF}]/gu;
+const VS = /(\p{Extended_Pictographic}|[0-9#*](?=\uFE0F\u20E3))[\uFE0E\uFE0F]|[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
 
 /**
  * Normalizes line endings, strips invisible characters, caps blank-line runs at one blank line, trims.
@@ -91,7 +91,7 @@ const httpUrl = z
   .max(300)
   .refine((u) => {
     try {
-      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u) || /[\u200C\u200D\u{E0000}-\u{E01EF}]/u.test(u)) return false;
+      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u) || /[\u200C\u200D\uFE00-\uFE0F\u{E0000}-\u{E01EF}]/u.test(u)) return false;
       const p = new URL(u).protocol;
       return p === "https:" || p === "http:";
     } catch {

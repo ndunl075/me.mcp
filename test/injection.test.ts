@@ -100,3 +100,20 @@ describe("read path stays linear on hostile stored text", () => {
     expect(n.text).toContain(NOTE_PREFIX);
   });
 });
+
+describe("blank-run squeezing", () => {
+  it("keeps indentation and short runs, collapses padding longer than 32 blanks, and indents every line", async () => {
+    const cookie = await signIn("indenter");
+    const about = ["Intro", "    four spaces", "\tTabbed", " ".repeat(32) + "thirty-two", "mid" + " ".repeat(32) + "aligned", "pad" + " ".repeat(33) + "ded", " ".repeat(40) + "overlong"].join("\n");
+    expect((await publish(cookie, { name: "Indenter", about })).status).toBe(302);
+    const t = await tool("/me/indenter/mcp", "get_about");
+    const lines = t.text.split("\n");
+    expect(lines).toContain("  " + "    four spaces"); // field() adds its own two-space indent; the author's indentation stays
+    expect(lines).toContain("  \tTabbed");
+    expect(lines).toContain("  " + " ".repeat(32) + "thirty-two");
+    expect(lines).toContain("  mid" + " ".repeat(32) + "aligned");
+    expect(lines).toContain("  pad ded"); // 33 blanks mid-line: padding
+    expect(lines).toContain("   overlong"); // 40 leading blanks: collapsed to one, plus field()'s two
+    expect(lines.filter((l) => l !== "" && !l.startsWith(" ") && !l.startsWith("About:") && !l.startsWith("Self-published"))).toEqual([]);
+  });
+});

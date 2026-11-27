@@ -128,6 +128,23 @@ describe("rate limiting: classification and enforcement", () => {
     expect(ipKey("unknown")).toBe("unknown");
   });
 
+  it("keys IPv4-mapped and IPv4-compatible IPv6 as the embedded IPv4 address", () => {
+    expect(ipKey("::ffff:102:304")).toBe("1.2.3.4");
+    expect(ipKey("::ffff:1.2.3.4")).toBe("1.2.3.4");
+    expect(ipKey("::FFFF:0102:0304")).toBe("1.2.3.4");
+    expect(ipKey("0:0:0:0:0:ffff:cb00:7109")).toBe("203.0.113.9");
+    expect(ipKey("::ffff:cb00:7109")).not.toBe(ipKey("::ffff:cb00:710a")); // distinct clients stay distinct
+    expect(ipKey("::1.2.3.4")).toBe("1.2.3.4");
+    expect(ipKey("::0102:0304")).toBe("1.2.3.4");
+    // not collapsed into the shared 0:0:0:0::/64 key
+    expect(ipKey("::ffff:102:304")).not.toBe(ipKey("::ffff:506:708"));
+    // everything else is unchanged
+    expect(ipKey("::1")).toBe("0:0:0:0::/64");
+    expect(ipKey("::")).toBe("0:0:0:0::/64");
+    expect(ipKey("::ffff:999.1.1.1")).toBe("::ffff:999.1.1.1");
+    expect(ipKey("1::2::3")).toBe("1::2::3");
+  });
+
   it("ignores x-forwarded-for even with a valid proxy secret", async () => {
     const statuses: number[] = [];
     for (let i = 0; i < 80; i++) {
@@ -183,18 +200,41 @@ describe("text cleaning", () => {
     expect(cleanText("می\u200Cخواهم")).toBe("می\u200Cخواهم");
     const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
     expect(cleanText(england)).toBe(england);
-    expect(cleanText("葛\u{E0100}城")).toBe("葛\u{E0100}城");
+    expect(cleanText("❤\uFE0F ☺\uFE0E 1\uFE0F\u20E3")).toBe("❤\uFE0F ☺\uFE0E 1\uFE0F\u20E3"); // emoji / text presentation, keycap
   });
 
   it("strips hidden-text channels and fillers", () => {
     const tagged = "hi\u{E0049}\u{E0067}\u{E006E}\u{E007F}";
     expect(cleanText(tagged)).toBe("hi");
-    expect(cleanText("a\u{E0100}b")).toBe("ab"); // variation selector not after an ideograph
+    expect(cleanText("a\u{E0100}b")).toBe("ab"); // ideographic variation selector after a letter
+    expect(cleanText("葛\u{E0100}城")).toBe("葛城"); // ... and after an ideograph: one hidden byte per character otherwise
+    const hidden = Array.from("hello", (c, i) => c + String.fromCodePoint(0xe0100 + i * 3)).join("") + "漢" + "\u{E01EF}";
+    expect(cleanText(hidden)).toBe("hello漢");
+    expect(cleanText("a\uFE00b\uFE01c\uFE0Ed\uFE0Fe")).toBe("abcde"); // variation selectors after plain text
+    expect(cleanText("漢\uFE00字\uFE0F")).toBe("漢字");
+    expect(cleanText("❤\uFE0F\uFE0F\uFE0E")).toBe("❤\uFE0F"); // only one selector per base survives
+    expect(cleanText("1\uFE0F2\uFE0E")).toBe("12"); // digits only keep it as part of a keycap
+    expect(cleanText("x\uFE0F\u20E3")).toBe("x\u20E3");
     expect(cleanText("a\u200D\u200C\u200D\u200Cb")).toBe("ab"); // run of joiners
-    for (const ch of ["\u200B", "\u202E", "\u2066", "\u2060", "\uFEFF", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u034F", "\u2800", "\uFFF9", "\u{1D173}"]) {
+    for (const ch of ["\u200B", "\u202E", "\u2066", "\u2060", "\uFEFF", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u034F", "\u2800", "\uFFF9", "\u{1D173}", "\u180B", "\u180C", "\u180D", "\u17B4", "\u17B5", "\u2065", "\u206A", "\u206B", "\u206C", "\u206D", "\u206E", "\u206F"]) {
       expect(cleanText(`a${ch}b`), `U+${ch.codePointAt(0)!.toString(16)}`).toBe("ab");
     }
     expect(cleanText("a\u2028b")).toBe("a\nb");
+  });
+
+  it("stays linear on selector-heavy and joiner-heavy input", () => {
+    const t0 = performance.now();
+    for (const unit of ["\uFE0F", "\u{E0100}", "漢\uFE00", "❤\uFE0F\uFE0F", "1\uFE0F", "a\u200D"]) cleanText(unit.repeat(8000));
+    expect(performance.now() - t0).toBeLessThan(300);
+  });
+
+  it("documented residual: a single joiner between letters survives", () => {
+    expect(cleanText("ab\u200Dcd")).toBe("ab\u200Dcd");
+  });
+
+  it("rejects link URLs carrying variation selectors", async () => {
+    const cookie = await signIn("vsurl");
+    expect((await publish(cookie, { links: "Site | https://example.com/\uFE0F" })).status).toBe(400);
   });
 });
 
