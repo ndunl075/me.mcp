@@ -102,23 +102,32 @@ export const SHARE_CARD_JS = /* js */ `
 
   function draw(avatar){
     var cv=document.createElement('canvas');cv.width=W;cv.height=H;
-    var c=cv.getContext('2d');
+    var c=cv.getContext('2d',{alpha:false});
     c.textBaseline='alphabetic';
 
-    // Background: same recipe as the landing page's .stage-bg (soft gray, white glow at the bottom, dot grid).
-    var g=c.createLinearGradient(0,0,0,H);g.addColorStop(0,'#f2f2f0');g.addColorStop(1,'#e8e8e5');
+    // Background: the landing page's .stage-bg look (soft gray, lighter toward the bottom, dot grid). Row-constant gradient on purpose:
+    // a 2-D radial glow costs ~100 KB of PNG here (the browser's encoder is not great) and every byte is read back from D1.
+    var g=c.createLinearGradient(0,0,0,H);g.addColorStop(0,'#f1f1ef');g.addColorStop(0.7,'#e9e9e6');g.addColorStop(1,'#f3f3f1');
     c.fillStyle=g;c.fillRect(0,0,W,H);
-    var rg=c.createRadialGradient(0,0,0,0,0,560);rg.addColorStop(0,'rgba(255,255,255,.95)');rg.addColorStop(1,'rgba(255,255,255,0)');
-    c.save();c.translate(W/2,H*1.18);c.scale(1.6,0.62);c.fillStyle=rg;c.fillRect(-W,-H*2,W*2,H*4);c.restore();
     c.fillStyle='rgba(0,0,0,.10)';c.beginPath();
     for(var y=0;y<H;y+=24)for(var x=0;x<W;x+=24){c.moveTo(x+1.5,y);c.arc(x,y,1.5,0,6.2832)}
     c.fill();
 
-    var PAD=72,FULL=W-2*PAD;
+    var PAD=72,FULL=W-2*PAD,AV=152;
+
+    // Measure the text blocks first so short profiles sit centred between the top edge and the footer instead of leaving a hole.
+    c.font='500 36px '+SANS;
+    var hl=cfg.headline?wrap(c,cfg.headline,FULL,2):[];
+    c.font='400 30px '+SANS;
+    var nl=cfg.now?wrap(c,cfg.now,FULL-64,2):[];
+    var headH=hl.length?34+hl.length*46+18:0;
+    var nowH=nl.length?(headH?0:34)+22+20+12+nl.length*40+16:0;
+    var used=AV+headH+nowH;
+    var ay=Math.max(48,Math.round(48+(470-used)/2)); // content zone: 48 .. 518, footer below
 
     // Avatar
-    var AV=152,ax=PAD,ay=56;
-    c.save();c.shadowColor='rgba(0,0,0,.22)';c.shadowBlur=28;c.shadowOffsetY=10;
+    var ax=PAD;
+    c.save();c.shadowColor='rgba(0,0,0,.16)';c.shadowBlur=14;c.shadowOffsetY=5;
     c.fillStyle='#fff';c.beginPath();c.arc(ax+AV/2,ay+AV/2,AV/2+6,0,6.2832);c.fill();c.restore();
     c.save();c.beginPath();c.arc(ax+AV/2,ay+AV/2,AV/2,0,6.2832);c.clip();
     if(avatar){c.drawImage(avatar,ax,ay,AV,AV)}
@@ -143,19 +152,16 @@ export const SHARE_CARD_JS = /* js */ `
 
     // Headline
     var cy=ay+AV+34;
-    if(cfg.headline){
+    if(hl.length){
       c.font='500 36px '+SANS;c.fillStyle=INK2;
-      var hl=wrap(c,cfg.headline,FULL,2);
       for(var i=0;i<hl.length;i++){c.fillText(hl[i],PAD,cy+30+i*46)}
       cy+=hl.length*46+18;
     }
 
     // "Now" card
-    if(cfg.now){
-      c.font='400 30px '+SANS;
-      var nl=wrap(c,cfg.now,FULL-64,2);
+    if(nl.length){
       var ch=22+20+12+nl.length*40+16;
-      c.save();c.shadowColor='rgba(0,0,0,.14)';c.shadowBlur=30;c.shadowOffsetY=10;c.fillStyle='#fff';rr(c,PAD,cy,FULL,ch,22);c.fill();c.restore();
+      c.save();c.shadowColor='rgba(0,0,0,.08)';c.shadowBlur=12;c.shadowOffsetY=4;c.fillStyle='#fff';rr(c,PAD,cy,FULL,ch,22);c.fill();c.restore();
       c.strokeStyle=LINE;c.lineWidth=2;rr(c,PAD+1,cy+1,FULL-2,ch-2,21);c.stroke();
       c.fillStyle='#16a34a';c.beginPath();c.arc(PAD+32+6,cy+22+10,6,0,6.2832);c.fill();
       c.font='500 20px '+MONO;spacing(c,2);c.fillStyle=MUTED;c.fillText('NOW',PAD+32+22,cy+22+17);spacing(c,0);
@@ -196,5 +202,7 @@ export const SHARE_CARD_JS = /* js */ `
 
 /** JSON for the data block, safe inside <script>: `<` (and the JS line separators) escaped so nothing can close the tag. */
 export function cardDataJson(data: Record<string, string>): string {
-  return JSON.stringify(data).replace(/</g, "\\u003c").replace(/ /g, "\\u2028").replace(/ /g, "\\u2029");
+  return JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/[\u2028\u2029]/g, (ch) => "\\u" + ch.charCodeAt(0).toString(16));
 }
