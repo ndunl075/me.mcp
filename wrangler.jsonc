@@ -11,6 +11,14 @@
     "PUBLIC_URL": "https://www.usefrontierdigital.com/me",
     "GITHUB_REPO_URL": "https://github.com/ndunl075/me.mcp"
   },
+  // Abuse control (see src/security.ts); only enforced when the PROXY_SECRET secret is set. Limits are per Cloudflare location, period 10 or 60 s.
+  // namespace_id must be unique within your Cloudflare account.
+  "ratelimits": [
+    // MCP endpoints (/mcp, /<handle>/mcp): per client IP.
+    { "name": "MCP_RATE_LIMIT", "namespace_id": "29001", "simple": { "limit": 60, "period": 60 } },
+    // POST /edit*, /auth/*: per client IP.
+    { "name": "WEB_RATE_LIMIT", "namespace_id": "29002", "simple": { "limit": 20, "period": 60 } }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -22,4 +30,7 @@
   ]
   // Secrets (set with `npx wrangler secret put NAME`):
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, SESSION_SECRET
+  // PROXY_SECRET (required to ENABLE the rate limits above): the same value the Vercel rewrite sets in the
+  // `x-origin-secret` request header (vercel.json routes transform, see README). It lets the Worker trust x-real-ip as the
+  // visitor IP. Without it the limits are not enforced, because behind Vercel every visitor shares one egress IP.
 }

@@ -35,25 +35,60 @@ export const RESERVED = new Set([
   "mcp", "new", "edit", "api", "auth", "assets", "logout", "llms.txt", "leaderboard", "explore", "about",
 ]);
 
-// Strip control chars (except newline/tab) and trim. Everything is still treated as untrusted on output.
-const clean = (max: number) =>
-  z
-    .string()
-    .transform((s) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F​-‏‪-‮⁦-⁩]/g, "").trim())
-    .pipe(z.string().max(max));
+// Characters that render as nothing (or reorder text) but are still read by models: control chars, bidi controls,
+// zero-width/invisible operators, BOM, soft hyphen, blank "filler" letters (Hangul, braille blank, grapheme joiner),
+// interlinear annotation and musical-symbol format controls.
+const INVISIBLE =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u034F\u061C\u115F\u1160\u180E\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u2800\u3164\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
+const HAS_INVISIBLE = new RegExp(INVISIBLE.source, "u"); // non-global: safe to .test() repeatedly
 
+// Unicode "tag" characters (U+E0000 block) can carry hidden ASCII, so they are stripped, except the three emoji
+// subdivision flags (England, Scotland, Wales), the only tag sequences emoji actually use.
+const TAGS = /(\u{1F3F4}\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E0073}\u{E0063}\u{E0074}|\u{E0077}\u{E006C}\u{E0073})\u{E007F})|[\u{E0000}-\u{E007F}]/gu;
+// Ideographic variation selectors (U+E0100 block) are legitimate right after a CJK ideograph (e.g. in Japanese names),
+// and a hidden-data channel anywhere else.
+const IVS = /([\u3400-\u9FFF\uF900-\uFAFF\u{20000}-\u{3FFFF}])[\u{E0100}-\u{E01EF}]|[\u{E0100}-\u{E01EF}]/gu;
+
+/**
+ * Normalizes line endings, strips invisible characters, caps blank-line runs at one blank line, trims.
+ * ZWJ/ZWNJ (U+200C/D) are kept, since emoji sequences and Persian/Indic scripts need them, but runs of them are
+ * dropped (no real text has two in a row; binary-encoded hidden text does).
+ */
+export function cleanText(s: string): string {
+  return s
+    .replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")
+    .replace(INVISIBLE, "")
+    .replace(TAGS, (_, flag) => flag ?? "")
+    .replace(IVS, (m, ideograph) => (ideograph ? m : ""))
+    .replace(/[\u200C\u200D]{2,}/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Single-line fields (name, headline, labels...): all whitespace runs, including newlines, become one space. */
+export function cleanLine(s: string): string {
+  return cleanText(s).replace(/\s+/g, " ");
+}
+
+// Everything is still treated as untrusted on output; this just removes the invisible/structural tricks.
+const clean = (max: number) => z.string().transform(cleanText).pipe(z.string().max(max));
+const cleanOneLine = (max: number) => z.string().transform(cleanLine).pipe(z.string().max(max));
+
+// No whitespace or invisible chars inside a URL: `new URL` tolerates them, and they'd smuggle prose into a "link".
 const httpUrl = z
   .string()
   .trim()
   .max(300)
   .refine((u) => {
     try {
+      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u) || /[\u200C\u200D\u{E0000}-\u{E01EF}]/u.test(u)) return false;
       const p = new URL(u).protocol;
       return p === "https:" || p === "http:";
     } catch {
       return false;
     }
-  }, "must be an http(s) URL");
+  }, "must be an http(s) URL with no spaces");
 
 export const LIMITS = {
   name: 80,
@@ -68,16 +103,16 @@ export const LIMITS = {
 };
 
 export const ProfileInput = z.object({
-  name: clean(LIMITS.name),
-  headline: clean(LIMITS.headline),
-  location: clean(LIMITS.location),
+  name: cleanOneLine(LIMITS.name),
+  headline: cleanOneLine(LIMITS.headline),
+  location: cleanOneLine(LIMITS.location),
   bio: clean(LIMITS.bio),
   now: clean(LIMITS.now),
   about: clean(LIMITS.about),
   contact: clean(LIMITS.contact),
-  links: z.array(z.object({ label: clean(60), url: httpUrl })).max(LIMITS.links),
+  links: z.array(z.object({ label: cleanOneLine(60), url: httpUrl })).max(LIMITS.links),
   projects: z
-    .array(z.object({ name: clean(80), url: z.union([httpUrl, z.literal("")]), description: clean(300) }))
+    .array(z.object({ name: cleanOneLine(80), url: z.union([httpUrl, z.literal("")]), description: cleanOneLine(300) }))
     .max(LIMITS.projects),
 });
 export type ProfileInput = z.infer<typeof ProfileInput>;
@@ -195,13 +230,20 @@ export async function createDraft(
     .bind(
       d.handle,
       d.github_id,
-      d.name.slice(0, LIMITS.name),
+      cleanLine(d.name).slice(0, LIMITS.name),
       d.avatar_url,
-      d.bio.slice(0, LIMITS.headline),
-      d.location.slice(0, LIMITS.location),
+      cleanLine(d.bio).slice(0, LIMITS.headline),
+      cleanLine(d.location).slice(0, LIMITS.location),
       "",
-      JSON.stringify(d.links.slice(0, LIMITS.links)),
-      JSON.stringify(d.projects.slice(0, LIMITS.projects)),
+      // GitHub-provided text is as untrusted as anything typed in the editor.
+      JSON.stringify(
+        d.links.slice(0, LIMITS.links).map((l) => ({ label: cleanLine(l.label).slice(0, 60), url: l.url })),
+      ),
+      JSON.stringify(
+        d.projects
+          .slice(0, LIMITS.projects)
+          .map((r) => ({ name: cleanLine(r.name).slice(0, 80), url: r.url, description: cleanLine(r.description).slice(0, 300) })),
+      ),
     )
     .run();
 }

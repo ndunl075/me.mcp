@@ -62,8 +62,18 @@ Open `http://localhost:8787/me/auth/dev?login=yourname` to sign in as anyone loc
    npx wrangler secret put GITHUB_CLIENT_ID
    npx wrangler secret put GITHUB_CLIENT_SECRET
    npx wrangler secret put SESSION_SECRET   # any long random string
+   npx wrangler secret put PROXY_SECRET     # see "Rate limits" below
    ```
 7. `npm run deploy`
+
+### Rate limits
+
+MCP endpoints (60/min per IP) and sign-in/editor writes (20/min per IP) use the Workers Rate Limiting binding. They are **only enforced when `PROXY_SECRET` is set**: behind a proxy such as the Vercel rewrite below, every visitor reaches the Worker from the proxy's IP, so without a trusted visitor IP one abuser would lock everyone out. To enable them:
+
+1. Generate a long random value (`openssl rand -hex 32`) and store it as the Worker secret `PROXY_SECRET` and as a Vercel environment variable (e.g. `ORIGIN_SECRET`).
+2. Have the Vercel rewrite attach it as a request header (a `routes` transform with `"type": "request.headers", "op": "set", "target": {"key": "x-origin-secret"}, "args": "$ORIGIN_SECRET", "env": ["ORIGIN_SECRET"]`, see [Vercel: restricting your origin to Vercel traffic](https://vercel.com/docs/rewrites#restricting-your-origin-to-vercel-traffic)).
+
+Requests carrying the matching header are keyed by `x-real-ip` (the visitor); everything else is keyed by `CF-Connecting-IP`.
 
 ### Serving under a path on an existing site
 

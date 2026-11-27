@@ -6,6 +6,11 @@ export interface Env {
   GITHUB_CLIENT_SECRET: string;
   SESSION_SECRET: string;
   DEV_LOGIN?: string;
+  // Rate limiting (wrangler.jsonc `ratelimits`). Optional so the Worker still runs where they aren't bound.
+  MCP_RATE_LIMIT?: RateLimit;
+  WEB_RATE_LIMIT?: RateLimit;
+  // Shared secret the Vercel rewrite sets in `x-origin-secret`; lets us trust x-real-ip. Rate limits are enforced only when it is set.
+  PROXY_SECRET?: string;
 }
 
 export interface Session {
