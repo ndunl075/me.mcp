@@ -1,3 +1,4 @@
+import { getPath } from "hono/utils/url";
 import type { Env } from "./env";
 import { corsHeaders } from "./mcp";
 
@@ -7,31 +8,42 @@ import { corsHeaders } from "./mcp";
 
 // What the pages actually load: inline <style>/<script> (no external scripts), Google Fonts (css + font files),
 // GitHub avatars (github.com/<user>.png redirects to avatars.githubusercontent.com), a data: favicon.
-// Links can point anywhere; CSP doesn't restrict navigation. 'unsafe-inline' for scripts is needed because the
-// page ships one inline <script> (views/client.ts); nothing user-written is rendered as HTML.
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src https://fonts.gstatic.com",
-  "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join("; ");
+// Links can point anywhere; CSP doesn't restrict navigation. 'unsafe-inline' for scripts is needed because pages ship
+// inline <script>s (views/client.ts, the welcome-flag cleanup) and an inline onsubmit; nothing user-written is rendered as HTML.
+// form-action also lists PUBLIC_URL's origin and github.com: Chrome applies it to the whole redirect chain of a form POST,
+// and an expired session on POST /edit redirects to /auth/github, which redirects on to github.com.
+const cspCache = new Map<string, string>();
+function csp(env: Env): string {
+  const origin = new URL(env.PUBLIC_URL).origin;
+  let v = cspCache.get(origin);
+  if (!v) {
+    v = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src https://fonts.gstatic.com",
+      "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
+      "connect-src 'self'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      `form-action 'self' ${origin} https://github.com`,
+      "frame-ancestors 'none'",
+    ].join("; ");
+    cspCache.set(origin, v);
+  }
+  return v;
+}
 
 /**
  * Adds security headers on the Worker's own response, so they survive a proxy (e.g. a Vercel rewrite) in front.
  * CSP only on HTML: it means nothing for JSON, and MCP responses keep their CORS headers untouched.
  */
-export function withSecurityHeaders(res: Response): Response {
+export function withSecurityHeaders(res: Response, env: Env): Response {
   const out = new Response(res.body, res); // copies: Response.redirect() and fetch() responses have immutable headers
   out.headers.set("X-Content-Type-Options", "nosniff");
   out.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   if ((out.headers.get("Content-Type") ?? "").toLowerCase().startsWith("text/html")) {
-    out.headers.set("Content-Security-Policy", CSP);
+    out.headers.set("Content-Security-Policy", csp(env));
   }
   return out;
 }
@@ -48,7 +60,9 @@ type Kind = "mcp" | "web";
 
 function classify(req: Request, base: string): Kind | null {
   if (req.method === "OPTIONS") return null; // CORS preflight: cheap, and must not eat the budget
-  let path = new URL(req.url).pathname;
+  // Classify the path the router will see: Hono decodes %XX before matching, so /me/%6Dcp is the MCP endpoint.
+  // Its own getPath is used so the two can't disagree. (It never throws: bad escapes are skipped.)
+  let path = getPath(req);
   if (base && path.startsWith(base)) path = path.slice(base.length);
   path = path.replace(/\/+$/, "") || "/";
   if (MCP_PATH.test(path)) return "mcp";
@@ -57,7 +71,7 @@ function classify(req: Request, base: string): Kind | null {
   return null;
 }
 
-/** True when the request carries the shared secret that the Vercel rewrite adds (see PROXY_SECRET in README/wrangler). */
+/** True when the request carries the shared secret that the Vercel rewrite adds (see PROXY_SECRET in wrangler.jsonc). */
 function cameThroughProxy(req: Request, env: Env): boolean {
   const secret = env.PROXY_SECRET;
   const got = req.headers.get("x-origin-secret");
@@ -71,21 +85,35 @@ function cameThroughProxy(req: Request, env: Env): boolean {
   return diff === 0;
 }
 
-/**
- * The visitor's IP for rate limiting. Behind the Vercel rewrite CF-Connecting-IP is a Vercel egress address shared by
- * everyone, so there we use x-real-ip (Vercel overwrites it with the visitor's IP). Those headers are trusted only when
- * the proxy secret matches; direct hits on the workers.dev URL fall back to CF-Connecting-IP, which can't be spoofed.
- */
-export function clientIp(req: Request, env: Env): string {
-  if (cameThroughProxy(req, env)) {
-    const ip = req.headers.get("x-real-ip") ?? req.headers.get("x-forwarded-for")?.split(",")[0];
-    if (ip?.trim()) return ip.trim();
-  }
-  return req.headers.get("cf-connecting-ip") ?? "unknown";
+/** IPv6 clients control a whole /64, so they are keyed by it; IPv4 and anything unparseable are used as-is. */
+export function ipKey(ip: string): string {
+  if (!ip.includes(":") || ip.includes(".")) return ip;
+  const [head, tail] = ip.toLowerCase().split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail === undefined ? [] : tail ? tail.split(":") : [];
+  const groups = tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return ip;
+  return groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":") + "::/64";
 }
 
-/** Returns a 429 response when the caller is over its limit, otherwise null. Fails open if the binding is missing or errors. */
+/**
+ * The visitor's IP for rate limiting. Behind the Vercel rewrite CF-Connecting-IP is a Vercel egress address shared by
+ * everyone, so there we use x-real-ip (Vercel overwrites it with the visitor's IP; x-forwarded-for is not used because
+ * a client can control its first entry). x-real-ip is trusted only when the proxy secret matches; direct hits on the
+ * workers.dev URL fall back to CF-Connecting-IP, which can't be spoofed.
+ */
+export function clientIp(req: Request, env: Env): string {
+  const real = cameThroughProxy(req, env) ? req.headers.get("x-real-ip")?.trim() : "";
+  return ipKey(real || req.headers.get("cf-connecting-ip") || "unknown");
+}
+
+/**
+ * Returns a 429 response when the caller is over its limit, otherwise null. Fails open if the binding is missing or errors.
+ * Enforced only when PROXY_SECRET is set: without it, behind the Vercel rewrite every visitor would share one egress IP
+ * and a single abuser could lock everyone out. Set PROXY_SECRET together with the Vercel header transform (README).
+ */
 export async function rateLimit(req: Request, env: Env, base: string): Promise<Response | null> {
+  if (!env.PROXY_SECRET) return null;
   const kind = classify(req, base);
   if (!kind) return null;
   const limiter = kind === "mcp" ? env.MCP_RATE_LIMIT : env.WEB_RATE_LIMIT;

@@ -4,6 +4,7 @@ import type { jsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/t
 import { z } from "zod";
 import {
   LIMITS,
+  cleanLine,
   type Profile,
   ProfilePatch,
   getPublishedProfile,
@@ -112,8 +113,8 @@ type Track = () => void;
 /** The per-person MCP server: fixed, predictable tools for every profile. */
 function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): McpServer {
   // The name lands in server instructions and tool descriptions, which agents read with more trust than tool output.
-  // Keep it to one short line even for rows written before db.ts cleaned names this way.
-  const name = p.name.replace(/\s+/g, " ").trim().slice(0, LIMITS.name);
+  // Run it through the same cleaning as new input, in case a row predates it.
+  const name = cleanLine(p.name).slice(0, LIMITS.name);
   const who = name ? `${name} (@${p.handle})` : `@${p.handle}`;
   const server = new McpServer(
     { name: `me.mcp/${p.handle}`, version: VERSION },
@@ -283,6 +284,55 @@ function networkServer(env: Env, trackFor: (handle: string) => void): McpServer 
   return server;
 }
 
+const MAX_BODY_BYTES = 64 * 1024;
+// MCP 2025-06-18 dropped JSON-RPC batching and real clients send single messages. The SDK accepts large batches,
+// and each message in one can cost D1 reads/writes, so a batch is capped small.
+const MAX_BATCH = 5;
+
+const rpcError = (status: number, code: number, message: string) =>
+  new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+
+/** Reads a request body, giving up (null) once it exceeds `max` bytes. */
+async function readCapped(req: Request, max: number): Promise<string | null> {
+  if (!req.body) return "";
+  if (Number(req.headers.get("content-length") ?? 0) > max) return null;
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) (all.set(c, at), (at += c.byteLength));
+  return new TextDecoder().decode(all);
+}
+
+/** Rejects oversized bodies and JSON-RPC batches over MAX_BATCH. Returns the request to hand to the transport. */
+async function guardBody(req: Request): Promise<{ req: Request } | { error: Response }> {
+  const raw = await readCapped(req, MAX_BODY_BYTES);
+  if (raw === null) return { error: rpcError(413, -32600, "Request body too large") };
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > MAX_BATCH) {
+      return { error: rpcError(400, -32600, `Batches are limited to ${MAX_BATCH} messages. Send fewer per request.`) };
+    }
+  } catch {
+    // Not JSON: the transport produces the standard parse error.
+  }
+  return { req: new Request(req.url, { method: req.method, headers: req.headers, body: raw }) };
+}
+
 async function serve(server: McpServer, req: Request): Promise<Response> {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless: every request stands alone, nothing to store
@@ -329,6 +379,9 @@ export async function handlePersonMcp(
 ): Promise<Response> {
   const guard = methodGuard(req, url(env, `/${handle}`));
   if (guard) return guard;
+  const body = await guardBody(req);
+  if ("error" in body) return withCors(body.error);
+  req = body.req;
   const p = await getPublishedProfile(env.DB, handle);
   if (!p) {
     return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: `No me.mcp profile for @${handle}` }, id: null }), {
@@ -349,7 +402,15 @@ export async function handlePersonMcp(
 export async function handleNetworkMcp(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const guard = methodGuard(req, url(env, "/"));
   if (guard) return guard;
+  const body = await guardBody(req);
+  if ("error" in body) return withCors(body.error);
+  req = body.req;
   const client = clientFromUserAgent(req.headers.get("user-agent"));
-  const trackFor = (handle: string) => ctx.waitUntil(recordCall(env.DB, handle, client).catch(() => {}));
+  const counted = new Set<string>(); // at most one stats write per handle per request, even in a batch
+  const trackFor = (handle: string) => {
+    if (counted.has(handle)) return;
+    counted.add(handle);
+    ctx.waitUntil(recordCall(env.DB, handle, client).catch(() => {}));
+  };
   return withCors(await serve(networkServer(env, trackFor), req));
 }

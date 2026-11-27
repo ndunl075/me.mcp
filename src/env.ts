@@ -9,7 +9,7 @@ export interface Env {
   // Rate limiting (wrangler.jsonc `ratelimits`). Optional so the Worker still runs where they aren't bound.
   MCP_RATE_LIMIT?: RateLimit;
   WEB_RATE_LIMIT?: RateLimit;
-  // Shared secret the Vercel rewrite sets in `x-origin-secret`; lets us trust x-real-ip. Unset = always use CF-Connecting-IP.
+  // Shared secret the Vercel rewrite sets in `x-origin-secret`; lets us trust x-real-ip. Rate limits are enforced only when it is set.
   PROXY_SECRET?: string;
 }
 

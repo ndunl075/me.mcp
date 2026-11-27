@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { call, publish, signIn, tool } from "./helpers";
+import { ipKey } from "../src/security";
+import { cleanText } from "../src/db";
 
 const MCP = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
 const LIST = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -96,6 +98,105 @@ describe("rate limiting", () => {
   });
 });
 
+
+
+describe("rate limiting: classification and enforcement", () => {
+  it("percent-encoded paths hit the same buckets as plain ones", async () => {
+    const ip = "198.51.100.10";
+    let limited = false;
+    for (let i = 0; i < 100 && !limited; i++) limited = (await post("/me/%6Dcp", ip)).status === 429;
+    expect(limited, "/me/%6Dcp must count against the MCP limit").toBe(true);
+    expect((await post("/me/mcp", ip)).status).toBe(429); // same bucket as the plain path
+
+    const ip2 = "198.51.100.11";
+    let webLimited = false;
+    for (let i = 0; i < 60 && !webLimited; i++) {
+      webLimited = (await call("/me/%61uth/logout", { headers: { "cf-connecting-ip": ip2 } })).status === 429;
+    }
+    expect(webLimited, "/me/%61uth/... must count against the web limit").toBe(true);
+  });
+
+  it("is not enforced unless PROXY_SECRET is set", async () => {
+    const open = { ...env, PROXY_SECRET: undefined };
+    for (let i = 0; i < 90; i++) expect((await post("/me/mcp", "198.51.100.12", {}, open)).status).toBe(200);
+  });
+
+  it("keys IPv6 clients by /64", () => {
+    expect(ipKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe(ipKey("2001:db8:1:2::1"));
+    expect(ipKey("2001:db8:1:3::1")).not.toBe(ipKey("2001:db8:1:2::1"));
+    expect(ipKey("203.0.113.9")).toBe("203.0.113.9");
+    expect(ipKey("unknown")).toBe("unknown");
+  });
+
+  it("ignores x-forwarded-for even with a valid proxy secret", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 80; i++) {
+      const r = await post("/me/mcp", "198.51.100.13", { "x-origin-secret": "test-proxy-secret", "x-forwarded-for": `203.0.113.${i}` });
+      statuses.push(r.status);
+    }
+    expect(statuses).toContain(429);
+  });
+});
+
+describe("MCP request guards", () => {
+  const batch = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ jsonrpc: "2.0", id: i + 1, method: "tools/list" })));
+  const send = (path: string, body: string) => call(path, { method: "POST", headers: MCP, body });
+
+  it("rejects JSON-RPC batches larger than 5 with a JSON-RPC error, accepts small ones", async () => {
+    for (const path of ["/me/mcp", "/me/someone/mcp"]) {
+      const big = await send(path, batch(6));
+      expect(big.status).toBe(400);
+      expect(big.headers.get("access-control-allow-origin")).toBe("*");
+      const body = (await big.json()) as any;
+      expect(body.jsonrpc).toBe("2.0");
+      expect(body.error.code).toBe(-32600);
+    }
+    const ok = await send("/me/mcp", batch(3));
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as any[]).length).toBe(3);
+  });
+
+  it("rejects oversized bodies and leaves malformed JSON to the transport", async () => {
+    const huge = await send("/me/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { pad: "x".repeat(70_000) } }));
+    expect(huge.status).toBe(413);
+    const bad = await send("/me/mcp", "{not json");
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as any).error).toBeDefined();
+  });
+
+  it("counts a handle once per request even when a batch looks it up repeatedly", async () => {
+    const cookie = await signIn("batcher");
+    await publish(cookie, { headline: "x" });
+    const msgs = Array.from({ length: 5 }, (_, i) => ({
+      jsonrpc: "2.0", id: i + 1, method: "tools/call", params: { name: "lookup_person", arguments: { handle: "batcher" } },
+    }));
+    const res = await send("/me/mcp", JSON.stringify(msgs));
+    expect(res.status).toBe(200);
+    const row = await env.DB.prepare("SELECT calls_total FROM profiles WHERE handle = 'batcher'").first<{ calls_total: number }>();
+    expect(row?.calls_total).toBe(1);
+  });
+});
+
+describe("text cleaning", () => {
+  it("keeps legitimate joiners, flags, ideographic variation selectors and ordinary text", () => {
+    expect(cleanText("👨\u200D👩\u200D👧")).toBe("👨\u200D👩\u200D👧");
+    expect(cleanText("می\u200Cخواهم")).toBe("می\u200Cخواهم");
+    const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+    expect(cleanText(england)).toBe(england);
+    expect(cleanText("葛\u{E0100}城")).toBe("葛\u{E0100}城");
+  });
+
+  it("strips hidden-text channels and fillers", () => {
+    const tagged = "hi\u{E0049}\u{E0067}\u{E006E}\u{E007F}";
+    expect(cleanText(tagged)).toBe("hi");
+    expect(cleanText("a\u{E0100}b")).toBe("ab"); // variation selector not after an ideograph
+    expect(cleanText("a\u200D\u200C\u200D\u200Cb")).toBe("ab"); // run of joiners
+    for (const ch of ["\u200B", "\u202E", "\u2066", "\u2060", "\uFEFF", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u034F", "\u2800", "\uFFF9", "\u{1D173}"]) {
+      expect(cleanText(`a${ch}b`), `U+${ch.codePointAt(0)!.toString(16)}`).toBe("ab");
+    }
+    expect(cleanText("a\u2028b")).toBe("a\nb");
+  });
+});
 
 describe("injection hygiene", () => {
   it("single-line fields collapse newlines and hidden characters; every tool result carries the note", async () => {

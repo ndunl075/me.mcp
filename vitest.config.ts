@@ -13,6 +13,8 @@ export default defineConfig(async () => {
             PUBLIC_URL: "http://localhost/me",
             SESSION_SECRET: "test-session-secret-0123456789abcdef",
             DEV_LOGIN: "1",
+            // Rate limits only enforce when this is set (src/security.ts); keep them on so the tests cover them.
+            PROXY_SECRET: "test-proxy-secret",
             TEST_MIGRATIONS: migrations,
           },
         },

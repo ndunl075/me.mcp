@@ -36,18 +36,31 @@ export const RESERVED = new Set([
 ]);
 
 // Characters that render as nothing (or reorder text) but are still read by models: control chars, bidi controls,
-// zero-width/invisible operators, BOM, soft hyphen, and the Unicode "tag" and variation-selector-supplement blocks
-// (used to smuggle hidden ASCII). Emoji-joining ZWJ (U+200D) is stripped too: simpler and safe for this use.
+// zero-width/invisible operators, BOM, soft hyphen, blank "filler" letters (Hangul, braille blank, grapheme joiner),
+// interlinear annotation and musical-symbol format controls.
 const INVISIBLE =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
-
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u034F\u061C\u115F\u1160\u180E\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u2800\u3164\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source, "u"); // non-global: safe to .test() repeatedly
 
-/** Normalizes line endings, strips invisible characters, caps blank-line runs at one blank line, trims. */
+// Unicode "tag" characters (U+E0000 block) can carry hidden ASCII, so they are stripped, except the three emoji
+// subdivision flags (England, Scotland, Wales), the only tag sequences emoji actually use.
+const TAGS = /(\u{1F3F4}\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E0073}\u{E0063}\u{E0074}|\u{E0077}\u{E006C}\u{E0073})\u{E007F})|[\u{E0000}-\u{E007F}]/gu;
+// Ideographic variation selectors (U+E0100 block) are legitimate right after a CJK ideograph (e.g. in Japanese names),
+// and a hidden-data channel anywhere else.
+const IVS = /([\u3400-\u9FFF\uF900-\uFAFF\u{20000}-\u{3FFFF}])[\u{E0100}-\u{E01EF}]|[\u{E0100}-\u{E01EF}]/gu;
+
+/**
+ * Normalizes line endings, strips invisible characters, caps blank-line runs at one blank line, trims.
+ * ZWJ/ZWNJ (U+200C/D) are kept, since emoji sequences and Persian/Indic scripts need them, but runs of them are
+ * dropped (no real text has two in a row; binary-encoded hidden text does).
+ */
 export function cleanText(s: string): string {
   return s
     .replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")
     .replace(INVISIBLE, "")
+    .replace(TAGS, (_, flag) => flag ?? "")
+    .replace(IVS, (m, ideograph) => (ideograph ? m : ""))
+    .replace(/[\u200C\u200D]{2,}/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -69,7 +82,7 @@ const httpUrl = z
   .max(300)
   .refine((u) => {
     try {
-      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u)) return false;
+      if (/[\s\u0000-\u001F\u007F]/.test(u) || HAS_INVISIBLE.test(u) || /[\u200C\u200D\u{E0000}-\u{E01EF}]/u.test(u)) return false;
       const p = new URL(u).protocol;
       return p === "https:" || p === "http:";
     } catch {
