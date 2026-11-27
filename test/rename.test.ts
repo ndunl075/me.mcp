@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { call, createKey, publish, rpc, tool } from "./helpers";
 import { oauthSignIn } from "./oauth";
+import { deleteStaleParkedProfiles } from "../src/db";
 
 const db = env.DB;
 const one = async <T>(sql: string, ...binds: unknown[]) => (await db.prepare(sql).bind(...binds).first<T>()) ?? null;
@@ -189,5 +190,21 @@ describe("reused login", () => {
     expect(bNew.res.status).toBe(302);
     expect(await one("SELECT github_id, now FROM profiles WHERE handle = 'swap-a'")).toEqual({ github_id: 9002, now: "I am B" });
     expect(await one("SELECT github_id, now FROM profiles WHERE handle = 'swap-b'")).toEqual({ github_id: 9001, now: "I am A" });
+  });
+});
+
+describe("parked profiles", () => {
+  it("deletes a parked row after 90 days and leaves a recent one, and a normal profile, alone", async () => {
+    await db.batch([
+      db.prepare("INSERT INTO profiles (handle, github_id, published, now, updated_at) VALUES ('~77001', 77001, 0, 'old parked', '2000-01-01 00:00:00')"),
+      db.prepare("INSERT INTO activity (handle, source, kind, title, url, ts) VALUES ('~77001', 'github', 'push', 'old', 'https://github.com/x/y', '2000-01-01T00:00:00Z')"),
+      db.prepare("INSERT INTO profiles (handle, github_id, published, now) VALUES ('~77002', 77002, 0, 'fresh parked')"),
+      db.prepare("INSERT INTO profiles (handle, github_id, published, now, updated_at) VALUES ('still-here', 77003, 1, 'real', '2000-01-01 00:00:00')"),
+    ]);
+    expect(await deleteStaleParkedProfiles(db)).toBe(1);
+    expect(await one("SELECT handle FROM profiles WHERE github_id = 77001")).toBeNull();
+    expect(await count("activity", "~77001")).toBe(0);
+    expect(await one("SELECT handle FROM profiles WHERE github_id = 77002")).toEqual({ handle: "~77002" });
+    expect(await one("SELECT handle FROM profiles WHERE handle = 'still-here'")).toEqual({ handle: "still-here" });
   });
 });

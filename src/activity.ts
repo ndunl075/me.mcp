@@ -125,14 +125,30 @@ export async function listSources(db: D1Database, handle: string): Promise<Sourc
  */
 const UNLISTED = -1;
 
-/** Owner's on/off switch for one source. Turning one off also removes what it contributed. A tombstoned (unlisted) row is left untouched, so it stays hidden. */
+/**
+ * Owner's on/off switch for one source. Turning one off also removes what it contributed. A tombstoned (unlisted) row
+ * is left untouched, so it stays hidden. Turning one on clears the profile's refresh marker: activity for that source
+ * was deleted while it was off, and the marker would otherwise keep the cron from fetching again for up to 24 h.
+ * The owner's next page view sees an empty marker and fetches immediately.
+ */
 export async function setSourceEnabled(db: D1Database, handle: string, source: SourceId, enabled: boolean): Promise<void> {
   if (!SOURCE_IDS.includes(source)) return;
-  const stmts = [
+  const stmts: D1PreparedStatement[] = [];
+  if (enabled) {
+    stmts.push(
+      db
+        .prepare(
+          `UPDATE sources SET last_fetched = NULL WHERE handle = ? AND source = 'github'
+           AND EXISTS (SELECT 1 FROM sources s WHERE s.handle = ? AND s.source = ? AND s.enabled = 0 AND s.failures >= 0)`,
+        )
+        .bind(handle, handle, source),
+    );
+  }
+  stmts.push(
     db
       .prepare("INSERT INTO sources (handle, source, enabled) VALUES (?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET enabled = excluded.enabled, failures = 0 WHERE sources.failures >= 0")
       .bind(handle, source, enabled ? 1 : 0),
-  ];
+  );
   if (!enabled) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, source));
   await db.batch(stmts);
 }

@@ -1,7 +1,9 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { call, publish, signIn, unpublish } from "./helpers";
-import { getCardVersion, saveCard } from "../src/cards";
+import { cardVersionOf, getCardVersion, saveCard, syncAvatarRev } from "../src/cards";
+import { getProfile } from "../src/db";
+import { SHARE_CARD_JS } from "../src/views/sharecard";
 
 // ---- a structurally valid PNG of any size (the Worker checks signature, IHDR dimensions and IEND, not pixel data) ----
 
@@ -417,6 +419,32 @@ describe("cleanup and referential integrity", () => {
     const res = await call("/me/omar/card.png");
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("public, max-age=300"); // brand card, not the old one
+  });
+});
+
+describe("avatar changes and fallback fonts", () => {
+  it("a new avatar etag changes the card version; the same etag and a failed check do not", async () => {
+    await env.DB.prepare("INSERT INTO profiles (handle, github_id, published, name, avatar_url) VALUES ('avrev', 515151, 1, 'Av', 'https://github.com/avrev.png')").run();
+    const load = async () => (await getProfile(env.DB, "avrev"))!;
+    const sameUrl = "http://localhost/me/avrev";
+    const before = await cardVersionOf(await load(), sameUrl);
+    const head = (etag: string | null, status = 200) =>
+      (async () => new Response(null, { status, headers: etag ? { etag } : {} })) as typeof fetch;
+    const changed = await syncAvatarRev(env.DB, await load(), head('"photo-2"'));
+    expect(changed.avatar_rev).toBe('"photo-2"');
+    expect(await cardVersionOf(changed, sameUrl)).not.toBe(before);
+    const again = await syncAvatarRev(env.DB, changed, head('"photo-2"'));
+    expect(again.avatar_rev).toBe('"photo-2"');
+    expect(await cardVersionOf(again, sameUrl)).toBe(await cardVersionOf(changed, sameUrl));
+    const missed = await syncAvatarRev(env.DB, again, head(null, 404));
+    expect(missed.avatar_rev).toBe('"photo-2"');
+  });
+
+  it("skips the upload when the brand fonts are not ready, before the card is posted", () => {
+    const skip = SHARE_CARD_JS.indexOf("skipped:fonts");
+    const post = SHARE_CARD_JS.indexOf("cfg.post");
+    expect(skip).toBeGreaterThan(0);
+    expect(post).toBeGreaterThan(skip);
   });
 });
 

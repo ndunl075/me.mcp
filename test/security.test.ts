@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { call, publish, signIn, tool, NOTE_PREFIX } from "./helpers";
 import { ipKey } from "../src/security";
-import { cleanText } from "../src/db";
+import { cleanText, LIMITS, ProfileInput } from "../src/db";
 
 const MCP = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
 const LIST = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -284,6 +284,18 @@ describe("text cleaning", () => {
 
   it("documented residual: a single joiner between letters survives", () => {
     expect(cleanText("ab\u200Dcd")).toBe("ab\u200Dcd");
+  });
+
+  it("cleans at most twice the stored max, so a 64 KB selector run stays cheap and an over-long field is still rejected", () => {
+    const big = "\uFE0F".repeat(64 * 1024);
+    const blank = { name: "", headline: "", location: "", bio: "", now: "", about: "", contact: "", links: [], projects: [] };
+    const started = performance.now();
+    const parsed = ProfileInput.safeParse({ ...blank, name: big, headline: big, location: big, bio: big, now: big, about: big, contact: big });
+    expect(performance.now() - started).toBeLessThan(15);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.about).toBe("");
+    expect(ProfileInput.safeParse({ ...blank, name: "a".repeat(LIMITS.name + 1) }).success).toBe(false);
+    expect(ProfileInput.safeParse({ ...blank, about: "a".repeat(LIMITS.about) }).success).toBe(true);
   });
 
   it("rejects link URLs carrying variation selectors", async () => {

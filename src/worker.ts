@@ -2,6 +2,7 @@ import { createApp } from "./index";
 import { type Env, basePathOf, url } from "./env";
 import { rateLimit, withSecurityHeaders } from "./security";
 import { refreshStaleProfiles } from "./activity";
+import { deleteStaleParkedProfiles } from "./db";
 
 // Worker entry point. Request-wide concerns (headers, rate limits) belong here; routes live in index.tsx.
 let cached: { base: string; app: ReturnType<typeof createApp> } | undefined;
@@ -19,5 +20,6 @@ export default {
   // Cron Trigger (wrangler.jsonc `triggers`): refresh the stalest few published profiles' activity.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(refreshStaleProfiles(env));
+    ctx.waitUntil(deleteStaleParkedProfiles(env.DB).catch((e) => console.error("parked profile cleanup failed", e)));
   },
 } satisfies ExportedHandler<Env>;

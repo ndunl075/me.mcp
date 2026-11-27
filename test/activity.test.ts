@@ -133,6 +133,8 @@ describe("refreshProfileActivity", () => {
     expect(f.calls.some((c) => c.url.includes("blog.zoe.example"))).toBe(false);
     expect((await listSources(env.DB, "zoe")).find((s) => s.source === "blog")!.enabled).toBe(false);
     await setSourceEnabled(env.DB, "zoe", "blog", true);
+    // Turning it back on clears the profile refresh marker, so the page fetches now instead of waiting out 24 h.
+    expect((await listSources(env.DB, "zoe")).find((s) => s.source === "github")!.last_fetched).toBeNull();
     await refreshProfileActivity(env, "zoe", { fetch: zoeFetch().fn, now: NOW });
     expect((await listActivity(env.DB, "zoe")).some((x) => x.source === "blog")).toBe(true);
   });
@@ -380,6 +382,20 @@ describe("cron selection", () => {
     await waitOnExecutionContext(ctx);
     const gh = (await listSources(env.DB, "sched")).find((s) => s.source === "github");
     expect(gh?.last_fetched).toBeTruthy();
+  });
+
+  it("a mocked refresh, which is what POST /edit/refresh runs, stays under the 10 ms CPU budget", async () => {
+    await makeProfile("cpu-refresh", 9602);
+    const { fn } = zoeFetch({
+      "https://api.github.com/users/cpu-refresh/events": () => json([]),
+      "https://api.github.com/users/cpu-refresh/social_accounts": () => json([]),
+      "https://api.github.com/users/cpu-refresh": () => json({ blog: "" }),
+    });
+    const started = performance.now();
+    const r = await refreshProfileActivity(env, "cpu-refresh", { fetch: fn, now: NOW });
+    const ms = performance.now() - started;
+    expect(r.ok).toBe(true);
+    expect(ms).toBeLessThan(10);
   });
 });
 

@@ -57,8 +57,14 @@ export async function readCapped(req: Request, max: number): Promise<Uint8Array 
  * Short hash of exactly what the card shows. A card is current while its stored version equals this; edits to fields the card
  * doesn't show (bio, about, links, projects, ...) don't count. It doubles as the cache-busting `?v=` of the image URL.
  */
-export async function cardVersionOf(p: Pick<Profile, "handle" | "name" | "location" | "headline" | "now" | "avatar_url">, pageUrl: string): Promise<string> {
-  const data = new TextEncoder().encode(JSON.stringify([CARD_DESIGN, p.handle, p.name, p.location, p.headline, p.now, p.avatar_url, pageUrl]));
+export async function cardVersionOf(
+  p: Pick<Profile, "handle" | "name" | "location" | "headline" | "now" | "avatar_url"> & { avatar_rev?: string },
+  pageUrl: string,
+): Promise<string> {
+  // avatar_rev is omitted while empty so cards drawn before the first check stay current.
+  const fields = [CARD_DESIGN, p.handle, p.name, p.location, p.headline, p.now, p.avatar_url, pageUrl];
+  if (p.avatar_rev) fields.push(p.avatar_rev);
+  const data = new TextEncoder().encode(JSON.stringify(fields));
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return Array.from(hash.subarray(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -101,6 +107,28 @@ export async function saveCard(db: D1Database, handle: string, png: Uint8Array, 
     .bind(toBase64(png), version, handle, githubId ?? null, githubId ?? null)
     .run();
   return res.meta.changes > 0;
+}
+
+/**
+ * Reads the GitHub avatar's ETag and stores it when it changed. The avatar URL is stable across photo changes,
+ * so this is what makes the share card redraw. Only `avatars.githubusercontent.com` is requested, and a failure
+ * leaves the stored revision alone. Returns the profile, with `avatar_rev` updated when the photo changed.
+ */
+export async function syncAvatarRev(db: D1Database, p: Profile, doFetch: typeof fetch = fetch): Promise<Profile> {
+  if (!Number.isInteger(p.github_id) || p.github_id <= 0) return p;
+  const url = `https://avatars.githubusercontent.com/u/${p.github_id}?s=64`;
+  let etag = "";
+  try {
+    const res = await doFetch(url, { method: "HEAD", redirect: "manual" });
+    await res.body?.cancel();
+    if (res.status !== 200) return p;
+    etag = (res.headers.get("etag") ?? "").trim().slice(0, 64);
+  } catch {
+    return p;
+  }
+  if (!etag || etag === p.avatar_rev) return p;
+  await db.prepare("UPDATE profiles SET avatar_rev = ? WHERE handle = ? AND github_id = ?").bind(etag, p.handle, p.github_id).run();
+  return { ...p, avatar_rev: etag };
 }
 
 /** Version of the stored card for a profile, or null if it has none. */

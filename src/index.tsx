@@ -32,7 +32,7 @@ import {
   signSession,
   verifySession,
 } from "./auth";
-import { CARD_MAX_BYTES, cardVersionOf, defaultCardResponse, getCardVersion, profileCardResponse, readCapped, saveCard, validateCardPng } from "./cards";
+import { CARD_MAX_BYTES, cardVersionOf, defaultCardResponse, getCardVersion, profileCardResponse, readCapped, saveCard, syncAvatarRev, validateCardPng } from "./cards";
 import { handleNetworkMcp, handlePersonMcp } from "./mcp";
 import { addCustomSource, listActivity, listCustomSources, listSources, refreshProfileActivity, removeCustomSource, setSourceEnabled } from "./activity";
 import type { SourceId } from "./sources";
@@ -146,14 +146,16 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
       isOwner ? listSources(c.env.DB, handle) : Promise.resolve([]),
       isOwner ? listCustomSources(c.env.DB, handle) : Promise.resolve([]),
     ]);
+    // The avatar URL does not change when the photo does. Check its ETag before deciding whether the card is stale.
+    const profile = isOwner && p.published && c.env.DEV_LOGIN !== "1" ? await syncAvatarRev(c.env.DB, p) : p;
     // Owner of a published profile whose card is missing or shows older content: the page redraws and uploads it.
-    const current = isOwner && p.published ? await cardVersionOf(p, `${ctxOf(c).publicUrl}/${handle}`) : null;
+    const current = isOwner && profile.published ? await cardVersionOf(profile, `${ctxOf(c).publicUrl}/${handle}`) : null;
     const drawVersion = current && current !== cardVersion ? current : null;
     c.header("Cache-Control", "no-store");
     const welcome = isOwner && p.published && c.req.query("welcome") === "1";
     return c.html(<ProfilePage
         ctx={ctxOf(c)}
-        p={p}
+        p={profile}
         stats={stats}
         isOwner={isOwner}
         welcome={welcome}

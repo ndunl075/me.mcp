@@ -16,6 +16,8 @@ export interface Profile {
   published: boolean;
   name: string;
   avatar_url: string;
+  /** ETag of the GitHub avatar the last time we checked. The URL itself does not change when the photo does. */
+  avatar_rev: string;
   headline: string;
   location: string;
   bio: string;
@@ -82,8 +84,11 @@ export function cleanLine(s: string): string {
 }
 
 // Everything is still treated as untrusted on output; this just removes the invisible/structural tricks.
-const clean = (max: number) => z.string().transform(cleanText).pipe(z.string().max(max));
-const cleanOneLine = (max: number) => z.string().transform(cleanLine).pipe(z.string().max(max));
+// Cap the raw string before cleaning. A 64 KB run of U+FE0F costs about 6.5 ms in cleanText, most of the
+// free-plan CPU budget, and the request body is allowed to be that long. Two times the stored max still
+// leaves room for characters the cleaner strips, then the max check rejects honest text that is too long.
+const clean = (max: number) => z.string().transform((s) => cleanText(s.slice(0, max * 2))).pipe(z.string().max(max));
+const cleanOneLine = (max: number) => z.string().transform((s) => cleanLine(s.slice(0, max * 2))).pipe(z.string().max(max));
 
 // No whitespace or invisible chars inside a URL: `new URL` tolerates them, and they'd smuggle prose into a "link".
 const httpUrl = z
@@ -187,6 +192,7 @@ function toProfile(r: Row): Profile {
     published: r.published === 1,
     name: r.name as string,
     avatar_url: r.avatar_url as string,
+    avatar_rev: (r.avatar_rev as string) ?? "",
     headline: r.headline as string,
     location: r.location as string,
     bio: r.bio as string,
@@ -295,9 +301,30 @@ export async function handleForKeyHash(db: D1Database, hash: string): Promise<st
   return r?.handle ?? null;
 }
 
+/** How long a parked `~<github_id>` row is kept for its owner to sign in under a new login. */
+export const PARKED_KEEP_DAYS = 90;
+
+/**
+ * Deletes parked profiles whose owner has not signed in again within PARKED_KEEP_DAYS.
+ * A few per call, so a cron run stays small. Returns how many were removed.
+ */
+export async function deleteStaleParkedProfiles(db: D1Database, limit = 5): Promise<number> {
+  const { results } = await db
+    .prepare(
+      `SELECT handle FROM profiles
+       WHERE handle GLOB '~[0-9]*' AND updated_at < datetime('now', ?)
+       LIMIT ?`,
+    )
+    .bind(`-${PARKED_KEEP_DAYS} days`, limit)
+    .all<{ handle: string }>();
+  for (const r of results) await deleteProfile(db, r.handle);
+  return results.length;
+}
+
 export async function deleteProfile(db: D1Database, handle: string): Promise<void> {
   await db.batch([
     db.prepare("DELETE FROM profiles WHERE handle = ?").bind(handle),
+    db.prepare("DELETE FROM share_cards WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM call_daily WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM call_clients WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM activity WHERE handle = ?").bind(handle),

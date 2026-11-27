@@ -96,7 +96,7 @@ You need a Cloudflare account (free), Node 22.12+ (CI uses 24), and a GitHub acc
 2. `npx wrangler login`
 3. `npx wrangler d1 create me-mcp`, then replace `database_id` in `wrangler.jsonc` (the file holds the hosted instance's id).
 4. Set `PUBLIC_URL` in `wrangler.jsonc` to where it will be served, e.g. `https://me-mcp.<you>.workers.dev/me` or `https://www.example.com/me`. Its path becomes the base path. Also set `GITHUB_REPO_URL` to your fork, and give the `ratelimits` entries `namespace_id` values unique in your Cloudflare account.
-5. `npm run db:migrate:remote` applies migrations `0001` to `0003`.
+5. `npm run db:migrate:remote` applies every file in `migrations/`, in order.
 6. Create a GitHub OAuth app (Settings → Developer settings → OAuth Apps) with callback URL `<PUBLIC_URL>/auth/callback`. No scopes are requested.
 7. Set secrets:
    ```sh

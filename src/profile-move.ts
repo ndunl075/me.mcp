@@ -54,7 +54,9 @@ export function moveHandleStatements(
   const stmts = [...clearHandleStatements(db, to), db.prepare("DELETE FROM share_cards WHERE handle = ?").bind(from)];
   stmts.push(
     db
-      .prepare(`UPDATE profiles SET handle = ?${opts.unpublish ? ", published = 0" : opts.publish ? ", published = 1" : ""} WHERE handle = ?`)
+      .prepare(
+        `UPDATE profiles SET handle = ?${opts.unpublish ? ", published = 0, updated_at = datetime('now')" : opts.publish ? ", published = 1" : ""} WHERE handle = ?`,
+      )
       .bind(to, from),
   );
   for (const t of HANDLE_TABLES) stmts.push(db.prepare(`UPDATE ${t} SET handle = ? WHERE handle = ?`).bind(to, from));

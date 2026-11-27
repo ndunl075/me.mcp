@@ -16,7 +16,7 @@ Layout:
 - `src/cards.ts`: X share cards (drawn in the owner's browser, stored in D1).
 - `src/sources.ts`, `src/custom-sources.ts`, `src/activity.ts`: activity sources. GitHub always; blog/Bluesky/Mastodon only if on the person's GitHub profile; a feed, website, Hacker News, dev.to or npm when the owner adds it (unverified ones stay, labeled). Fetched with SSRF checks and refreshed by cron (one profile per run).
 - `src/views/*`: pages, CSS, client JS.
-- `migrations/`: `0001_init`, `0002_share_cards`, `0003_activity`. Add new ones in order; tests apply all of them.
+- `migrations/`: `0001_init`, `0002_share_cards`, `0003_activity`, `0004_custom_sources`, `0005_avatar_rev`. Add new ones in order; tests apply all of them.
 - `test/`: vitest in the Workers runtime (`@cloudflare/vitest-plugin`, config in `vitest.config.ts`). `npm test`; `npm run typecheck` also checks `test/`.
 
 Tools (per person): `get_profile`, `get_now`, `get_projects`, `get_about`, `get_recent_activity`, `search`, `get_contact`, plus owner-only `update_profile` when the request carries their agent key. Network (`/mcp`): `lookup_person`, `search_people`.
