@@ -2,7 +2,7 @@
  * Share-card renderer: runs in the profile owner's browser, never on the Worker (free plan: 10 ms CPU, no image APIs).
  *
  * Draws the 1200x630 card for the X / Open Graph unfurl on a <canvas> and POSTs the PNG to `<base>/edit/card`.
- * The profile page only includes this when the viewer is the owner and the stored card is missing or older than the
+ * The profile page only includes this when the viewer is the owner and the stored card is missing or shows older content than the
  * profile (see ProfilePage), so it runs on the post-sign-up landing (?welcome=1) and after edits, not on every visit.
  *
  * Inputs come from <script type="application/json" id="share-card-data"> (written with `<` escaped, see cardDataJson):
@@ -35,10 +35,9 @@ export const SHARE_CARD_JS = /* js */ `
       document.fonts.load('400 32px "Inter"',t),
       document.fonts.load('500 24px "JetBrains Mono"',t)
     ].map(function(p){return p.catch(function(){return []})});
-    return withTimeout(Promise.all([document.fonts.ready].concat(jobs)),6000).then(function(r){
-      // Cal Sans is the card's look: without it, skip and let the next visit retry rather than store a fallback-font card.
-      return !!(r&&r[1]&&r[1].length);
-    });
+    // Wait for the fonts, but not forever: after the timeout (or a failed load) the card is drawn with the fallback stack in
+    // DISPLAY/SANS/MONO rather than not at all. A card in a system font beats the generic brand card.
+    return withTimeout(Promise.all([document.fonts.ready].concat(jobs)),6000);
   }
 
   function avatarUrl(u){
@@ -187,7 +186,6 @@ export const SHARE_CARD_JS = /* js */ `
   }
 
   Promise.all([loadFonts(),loadAvatar()]).then(function(r){
-    if(!r[0]){status('skipped:fonts');return}
     // A tainted canvas (avatar served without CORS) makes toBlob throw or return null: draw initials instead.
     return toPng(draw(r[1])).then(function(b){return b||toPng(draw(null))}).then(function(b){
       if(!b){status('skipped:canvas');return}

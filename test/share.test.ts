@@ -23,7 +23,21 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
   dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
   return out;
 }
-function png(width = 1200, height = 630, padding = 0, { iend = true } = {}): Uint8Array {
+/** Filler pixel data: constant bytes, or incompressible pseudo-random ones so a card is the size of a real one. */
+function idat(n: number, noise: boolean): Uint8Array {
+  const out = new Uint8Array(n).fill(7);
+  if (noise) {
+    let x = 123456789;
+    for (let i = 0; i < n; i++) {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      out[i] = x & 255;
+    }
+  }
+  return out;
+}
+function png(width = 1200, height = 630, padding = 0, { iend = true, noise = false } = {}): Uint8Array {
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);
@@ -32,7 +46,7 @@ function png(width = 1200, height = 630, padding = 0, { iend = true } = {}): Uin
   const parts = [
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk("IHDR", ihdr),
-    chunk("IDAT", new Uint8Array(16 + padding).fill(7)),
+    chunk("IDAT", idat(16 + padding, noise)),
     ...(iend ? [chunk("IEND", new Uint8Array(0))] : []),
   ];
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
@@ -121,6 +135,17 @@ describe("POST /edit/card", () => {
     expect((await upload(cookie, ok)).status).toBe(204);
   });
 
+  it("rejects an owner whose profile is unpublished", async () => {
+    const c = await signIn("mallory");
+    await publish(c, { name: "Mallory" });
+    await unpublish(c);
+    const res = await upload(c, png());
+    expect(res.status).toBe(403);
+    expect(await cardRows("mallory")).toBe(0);
+    await publish(c, { name: "Mallory" });
+    expect((await upload(c, png())).status).toBe(204);
+  });
+
   it("requires Content-Type: image/png", async () => {
     for (const type of [null, "text/plain", "application/x-www-form-urlencoded", "application/octet-stream"]) {
       expect((await upload(cookie, png(), { type })).status, String(type)).toBe(400);
@@ -128,7 +153,7 @@ describe("POST /edit/card", () => {
   });
 
   it("answers 409 when the profile changed since the card was drawn", async () => {
-    const res = await upload(cookie, png(), { query: "?v=1999-01-01%2000%3A00%3A00" });
+    const res = await upload(cookie, png(), { query: "?v=0000000000000000" });
     expect(res.status).toBe(409);
   });
 });
@@ -138,15 +163,16 @@ describe("GET /:handle/card.png", () => {
     const res = await call("/me/ivan/card.png");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
-    expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=300"); // a stand-in: short, the real card may appear any time
     expect(res.headers.get("etag")).toBeTruthy();
     const b = new Uint8Array(await res.arrayBuffer());
     expect(Array.from(b.subarray(1, 4))).toEqual([0x50, 0x4e, 0x47]);
     expect(new DataView(b.buffer).getUint32(16)).toBe(1200);
     expect(new DataView(b.buffer).getUint32(20)).toBe(630);
     // The same image is the landing page's og:image.
-    const landing = new Uint8Array(await (await call("/me/card.png")).arrayBuffer());
-    expect(landing).toEqual(b);
+    const landingRes = await call("/me/card.png");
+    expect(landingRes.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(new Uint8Array(await landingRes.arrayBuffer())).toEqual(b);
   });
 
   it("answers conditional requests for the default card with 304", async () => {
@@ -161,30 +187,55 @@ describe("GET /:handle/card.png", () => {
     expect(up.status).toBe(204);
     expect(await cardRows("heidi")).toBe(1);
 
+    // No ?v: short TTL, so a stale or guessed URL can't pin an old image.
     const res = await call("/me/heidi/card.png");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
-    expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=300");
     const etag = res.headers.get("etag")!;
-    expect(etag).toMatch(/^"[0-9a-z-]+"$/);
+    expect(etag).toMatch(/^"[0-9a-f]{16}"$/);
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(card);
 
     const again = await call("/me/heidi/card.png", { headers: { "If-None-Match": etag } });
     expect(again.status).toBe(304);
     expect(again.headers.get("etag")).toBe(etag);
+    expect(again.headers.get("cache-control")).toBe("public, max-age=300");
 
     // Handles are case-insensitive, like profile pages.
     expect((await call("/me/Heidi/card.png")).status).toBe(200);
   });
 
-  it("replaces the card on re-upload (one row per handle) and changes the ETag", async () => {
-    const before = (await call("/me/heidi/card.png")).headers.get("etag");
-    const next = png(1200, 630, 7000);
+  it("caches immutably only when ?v is the stored card's version", async () => {
+    const etag = (await call("/me/heidi/card.png")).headers.get("etag")!;
+    const version = etag.replaceAll('"', "");
+    const hit = await call(`/me/heidi/card.png?v=${version}`);
+    expect(hit.status).toBe(200);
+    expect(hit.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(hit.headers.get("cdn-cache-control")).toBe("max-age=31536000");
+    const hit304 = await call(`/me/heidi/card.png?v=${version}`, { headers: { "If-None-Match": etag } });
+    expect(hit304.status).toBe(304);
+    expect(hit304.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    for (const v of ["0", "ffffffffffffffff", ""]) {
+      const miss = await call(`/me/heidi/card.png?v=${v}`);
+      expect(miss.headers.get("cache-control"), v).toBe("public, max-age=300");
+      expect(miss.headers.get("cdn-cache-control"), v).toBeNull();
+    }
+  });
+
+  it("round-trips a realistic ~200 KB card byte for byte", async () => {
+    const card = png(1200, 630, 200 * 1024, { noise: true });
+    expect(card.length).toBeGreaterThan(200 * 1024);
+    expect((await upload(cookie, card)).status).toBe(204);
+    const res = await call("/me/heidi/card.png");
+    expect(res.headers.get("content-length") ?? String(card.length)).toBe(String(card.length));
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(card);
+  });
+
+  it("replaces the card on re-upload (one row per handle) and serves the new bytes", async () => {
+    const next = png(1200, 630, 7000, { noise: true });
     expect((await upload(cookie, next)).status).toBe(204);
     expect(await cardRows("heidi")).toBe(1);
-    const res = await call("/me/heidi/card.png");
-    expect(res.headers.get("etag")).not.toBe(before);
-    expect(new Uint8Array(await res.arrayBuffer())).toEqual(next);
+    expect(new Uint8Array(await (await call("/me/heidi/card.png")).arrayBuffer())).toEqual(next);
   });
 
   it("only ever writes the signed-in owner's card", async () => {
@@ -212,19 +263,33 @@ describe("profile page meta tags and script", () => {
     const html = await (await call("/me/heidi")).text();
     expect(meta(html, "twitter:card")).toBe("summary_large_image");
     const img = meta(html, "og:image")!;
-    expect(img).toMatch(/^http:\/\/localhost\/me\/heidi\/card\.png\?v=\d+$/);
+    expect(img).toMatch(/^http:\/\/localhost\/me\/heidi\/card\.png\?v=[0-9a-f]{16}$/);
     expect(meta(html, "twitter:image")).toBe(img);
     expect(meta(html, "og:image:width")).toBe("1200");
     expect(meta(html, "og:image:height")).toBe("630");
   });
 
-  it("changes the image URL when the card is regenerated", async () => {
+  it("changes the image URL when the card is regenerated for new content", async () => {
     const v1 = meta(await (await call("/me/heidi")).text(), "og:image");
-    await env.DB.prepare("UPDATE profiles SET updated_at = '2099-01-01 00:00:00' WHERE handle = 'heidi'").run();
-    expect((await upload(cookie, png(), { query: "?v=2099-01-01%2000%3A00%3A00" })).status).toBe(204);
+    expect(v1).toMatch(/v=[0-9a-f]{16}$/);
+    // Editing a field the card shows makes the stored card stale; the owner's page asks for a redraw at the new version.
+    await publish(cookie, { name: "Heidi", headline: "Builds things", now: "Shipping cards v2" });
+    const page = await (await call("/me/heidi", { headers: { Cookie: cookie } })).text();
+    expect(page).toContain('id="share-card-data"');
+    const post = page.match(/"post":"([^"]+)"/)![1];
+    expect(post).toMatch(/^\/me\/edit\/card\?v=[0-9a-f]{16}$/);
+    // Until it is uploaded, the public page still points at the old card.
+    expect(meta(await (await call("/me/heidi")).text(), "og:image")).toBe(v1);
+    expect((await upload(cookie, png(), { query: post.replace("/me/edit/card", "") })).status).toBe(204);
     const v2 = meta(await (await call("/me/heidi")).text(), "og:image");
     expect(v2).not.toBe(v1);
-    expect(v2).toMatch(/v=20990101000000$/);
+  });
+
+  it("ignores edits to fields the card doesn't show", async () => {
+    const page = () => call("/me/heidi", { headers: { Cookie: cookie } }).then((r) => r.text());
+    expect(await page()).not.toContain("share-card-data");
+    await publish(cookie, { name: "Heidi", headline: "Builds things", now: "Shipping cards v2", bio: "A new bio", about: "More about me" });
+    expect(await page()).not.toContain("share-card-data");
   });
 
   it("falls back to the default card URL for a profile without a card", async () => {
@@ -261,8 +326,8 @@ describe("profile page meta tags and script", () => {
     expect(res.status).toBe(204);
     expect(await (await call("/me/ivan", { headers: { Cookie: otherCookie } })).text()).not.toContain("share-card-data");
 
-    // The profile moves on: stale again.
-    await env.DB.prepare("UPDATE profiles SET updated_at = '2099-06-01 00:00:00' WHERE handle = 'ivan'").run();
+    // A shown field changes (the avatar here): stale again.
+    await env.DB.prepare("UPDATE profiles SET avatar_url = 'https://avatars.githubusercontent.com/u/1?v=4' WHERE handle = 'ivan'").run();
     expect(await (await call("/me/ivan", { headers: { Cookie: otherCookie } })).text()).toContain("share-card-data");
   });
 
@@ -277,7 +342,17 @@ describe("profile page meta tags and script", () => {
   });
 });
 
-describe("cleanup", () => {
+describe("cleanup and referential integrity", () => {
+  const devId = async (login: string) =>
+    (await env.DB.prepare("SELECT github_id AS id FROM profiles WHERE handle = ?").bind(login).first<{ id: number }>())!.id;
+
+  it("the database refuses a card for a handle with no profile", async () => {
+    await expect(
+      env.DB.prepare("INSERT INTO share_cards (handle, png_b64, version) VALUES ('ghost', 'AAAA', 'x')").run(),
+    ).rejects.toThrow();
+    expect(await cardRows("ghost")).toBe(0);
+  });
+
   it("deleting a profile deletes its card", async () => {
     const c = await signIn("lena");
     await publish(c, { name: "Lena" });
@@ -287,5 +362,41 @@ describe("cleanup", () => {
     expect(res.status).toBe(302);
     expect(await cardRows("lena")).toBe(0);
     expect((await call("/me/lena/card.png")).status).toBe(404);
+  });
+
+  it("a GitHub rename (same account, new login) drops the old handle's card", async () => {
+    const old = await signIn("nora-old");
+    await publish(old, { name: "Nora" });
+    expect((await upload(old, png())).status).toBe(204);
+    // Make the old row belong to the account that the dev login "nora-new" will present.
+    await signIn("nora-new");
+    const id = await devId("nora-new");
+    await env.DB.prepare("DELETE FROM profiles WHERE handle = 'nora-new'").run();
+    await env.DB.prepare("UPDATE profiles SET github_id = ? WHERE handle = 'nora-old'").bind(id).run();
+    await signIn("nora-new"); // sign-in finds the account under another handle and replaces it
+    expect(await cardRows("nora-old")).toBe(0);
+    expect((await call("/me/nora-old/card.png")).status).toBe(404);
+  });
+
+  it("a handle taken over by another GitHub account does not inherit the previous owner's card", async () => {
+    const c = await signIn("omar");
+    await publish(c, { name: "Omar" });
+    expect((await upload(c, png())).status).toBe(204);
+    await env.DB.prepare("UPDATE profiles SET github_id = 999999999 WHERE handle = 'omar'").run(); // previous owner renamed away
+    await signIn("omar"); // a different account now has this login
+    expect(await cardRows("omar")).toBe(0);
+    const res = await call("/me/omar/card.png");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("public, max-age=300"); // brand card, not the old one
+  });
+});
+
+describe("Share on X", () => {
+  it("links the profile page last, so X unfurls its card, and keeps the MCP URL in the text", async () => {
+    const html = await (await call("/me/heidi", { headers: { Cookie: cookie } })).text();
+    const href = html.match(/href="(https:\/\/x\.com\/intent\/post\?[^"]+)"/)![1].replaceAll("&amp;", "&").replaceAll("&#39;", "'");
+    const q = new URL(href).searchParams;
+    expect(q.get("url")).toBe("http://localhost/me/heidi");
+    expect(q.get("text")).toContain("http://localhost/me/heidi/mcp");
   });
 });

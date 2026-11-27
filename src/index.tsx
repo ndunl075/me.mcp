@@ -32,7 +32,7 @@ import {
   signSession,
   verifySession,
 } from "./auth";
-import { CARD_MAX_BYTES, defaultCardResponse, deleteCard, getCardVersion, profileCardResponse, readCapped, saveCard, validateCardPng } from "./cards";
+import { CARD_MAX_BYTES, cardVersionOf, defaultCardResponse, getCardVersion, profileCardResponse, readCapped, saveCard, validateCardPng } from "./cards";
 import { handleNetworkMcp, handlePersonMcp } from "./mcp";
 import type { Ctx } from "./views/layout";
 import { Layout } from "./views/layout";
@@ -62,11 +62,9 @@ export function createApp(base: string) {
   // The brand card: landing page og:image, and the fallback for profiles without a card. Before /:handle so "card.png" never reads as a handle
   // (GitHub logins can't contain a dot).
   app.get("/card.png", (c) => defaultCardResponse(c.req.raw));
-  app.get("/:handle/card.png", async (c) => {
-    const handle = c.req.param("handle").toLowerCase();
-    if (!(await getPublishedProfile(c.env.DB, handle))) return c.text("Not found", 404);
-    return profileCardResponse(c.req.raw, c.env.DB, handle);
-  });
+  app.get("/:handle/card.png", (c) =>
+    profileCardResponse(c.req.raw, c.env.DB, c.req.param("handle").toLowerCase(), c.req.query("v") ?? null),
+  );
 
   app.use("*", async (c, next) => {
     c.set("session", await verifySession(c.env, getCookie(c, SESSION_COOKIE)));
@@ -109,9 +107,12 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     const isOwner = !!s && !!p && s.login === handle && p.github_id === s.id;
     if (!p || (!p.published && !isOwner)) return notFound(c, handle);
     const [stats, cardVersion] = await Promise.all([getStats(c.env.DB, handle, p.calls_total), getCardVersion(c.env.DB, handle)]);
+    // Owner of a published profile whose card is missing or shows older content: the page redraws and uploads it.
+    const current = isOwner && p.published ? await cardVersionOf(p, `${ctxOf(c).publicUrl}/${handle}`) : null;
+    const drawVersion = current && current !== cardVersion ? current : null;
     c.header("Cache-Control", "no-store");
     const welcome = isOwner && p.published && c.req.query("welcome") === "1";
-    return c.html(<ProfilePage ctx={ctxOf(c)} p={p} stats={stats} isOwner={isOwner} welcome={welcome} cardVersion={cardVersion} />);
+    return c.html(<ProfilePage ctx={ctxOf(c)} p={p} stats={stats} isOwner={isOwner} welcome={welcome} cardVersion={cardVersion} drawVersion={drawVersion} />);
   });
 
   app.get("/:handle/llms.txt", async (c) => {
@@ -275,6 +276,7 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     if (!c.get("session")) return c.text("Sign in required.", 401);
     const p = await requireOwner(c);
     if (!p) return c.text("Not your profile.", 403);
+    if (!p.published) return c.text("Publish your profile first.", 403);
     // A cross-site form can't send image/png without a CORS preflight, which this endpoint never answers.
     if ((c.req.header("content-type") ?? "").split(";")[0].trim().toLowerCase() !== "image/png") {
       return c.text("Expected an image/png body.", 400);
@@ -283,17 +285,18 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
     if (!png) return c.text("Card is larger than 400 KB.", 400);
     const bad = validateCardPng(png);
     if (bad) return c.text(bad, 400);
-    // The card is stamped with the profile version it was drawn from. If the profile changed in the meantime, drop it: the next page view redraws.
+    // The card is stamped with a hash of the fields it was drawn from. If those changed since the page was rendered, refuse: the next view redraws.
+    const version = await cardVersionOf(p, ctxOf(c).publicUrl + "/" + p.handle);
     const drawnFrom = c.req.query("v");
-    if (drawnFrom !== undefined && drawnFrom !== p.updated_at) return c.text("Profile changed since this card was drawn.", 409);
-    await saveCard(c.env.DB, p.handle, png, p.updated_at);
+    if (drawnFrom !== undefined && drawnFrom !== version) return c.text("Profile changed since this card was drawn.", 409);
+    if (!(await saveCard(c.env.DB, p.handle, png, version))) return c.text("Publish your profile first.", 403);
     return c.body(null, 204);
   });
 
   app.post("/edit/delete", async (c) => {
     const p = await requireOwner(c);
     if (!p) return c.redirect(url(c.env, "/auth/github"));
-    await removeProfile(c.env.DB, p.handle);
+    await deleteProfile(c.env.DB, p.handle);
     deleteCookie(c, SESSION_COOKIE, { path: cookiePath });
     return c.redirect(url(c.env, "/"));
   });
@@ -325,12 +328,6 @@ Sign in with GitHub at ${u}/ and publish. Free and open source: ${c.env.GITHUB_R
   });
 
   return app;
-}
-
-/** Deletes a profile together with its share card (the card lives in its own table, outside db.ts's deleteProfile). */
-async function removeProfile(db: D1Database, handle: string): Promise<void> {
-  await deleteCard(db, handle);
-  await deleteProfile(db, handle);
 }
 
 /** Seed `now` from the most recently pushed repo so get_now is useful from the first call. */
@@ -397,13 +394,13 @@ async function signIn(db: D1Database, d: Seed): Promise<boolean> {
   const byId = await getProfileByGithubId(db, d.github_id);
   if (byId && byId.handle !== d.handle) {
     // GitHub username changed: drop the old handle's row and start fresh under the new one.
-    await removeProfile(db, byId.handle);
+    await deleteProfile(db, byId.handle);
   }
   const byHandle = byId && byId.handle === d.handle ? byId : await getProfile(db, d.handle);
   if (byHandle) {
     if (byHandle.github_id === d.github_id) return false;
     // Same handle, different GitHub account: the previous owner renamed away. Never hand their profile to the new owner.
-    await removeProfile(db, d.handle);
+    await deleteProfile(db, d.handle);
   }
   const f = sanitizeSeed(d);
   const res = await db
