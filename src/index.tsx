@@ -36,7 +36,7 @@ import { CARD_MAX_BYTES, cardVersionOf, defaultCardResponse, getCardVersion, pro
 import { handleNetworkMcp, handlePersonMcp } from "./mcp";
 import { listActivity, listSources, refreshProfileActivity, setSourceEnabled } from "./activity";
 import type { SourceId } from "./sources";
-import { moveHandleStatements, placeholderHandle } from "./profile-move";
+import { moveHandleStatements, placeholderHandle, wasPublishedBeforeParking } from "./profile-move";
 import type { Ctx } from "./views/layout";
 import { Layout } from "./views/layout";
 import { Landing } from "./views/landing";
@@ -455,7 +455,7 @@ export type SignInOutcome = "created" | "renamed" | "existing";
  *  - This github_id has a row under another handle (the person renamed on GitHub): the profile, key hash, call
  *    totals, call stats, activity and sources move to the new handle (src/profile-move.ts).
  *  - The handle's row belongs to a different github_id (that account renamed away and this login was reused): the
- *    old row is parked at an unpublished `~<github_id>` handle, so when its owner signs in under their new login the
+ *    old row is parked at an unpublished `~<github_id>` handle (`~<github_id>u` if it was already unpublished), so when its owner signs in under their new login the
  *    rename path above finds it by github_id and moves it over.
  *  - Otherwise a new profile is created and published in one INSERT.
  */
@@ -464,10 +464,12 @@ async function signIn(db: D1Database, d: Seed): Promise<SignInOutcome> {
   if (byHandle && byHandle.github_id === d.github_id) return "existing";
 
   const stmts: D1PreparedStatement[] = [];
-  if (byHandle) stmts.push(...moveHandleStatements(db, byHandle.handle, placeholderHandle(byHandle.github_id), { unpublish: true }));
+  if (byHandle) stmts.push(...moveHandleStatements(db, byHandle.handle, placeholderHandle(byHandle.github_id, byHandle.published), { unpublish: true }));
   let outcome: SignInOutcome;
   if (byId) {
-    stmts.push(...moveHandleStatements(db, byId.handle, d.handle));
+    // Coming home from a parking spot (the login had been taken): the profile goes live again, as it was before.
+    const home = byId.handle.startsWith("~") && wasPublishedBeforeParking(byId.handle);
+    stmts.push(...moveHandleStatements(db, byId.handle, d.handle, { publish: home }));
     outcome = "renamed";
   } else {
     const f = sanitizeSeed(d);
@@ -489,8 +491,8 @@ async function signIn(db: D1Database, d: Seed): Promise<SignInOutcome> {
     if (now && now.github_id === d.github_id) return "existing";
     throw e;
   }
-  // A renamed profile that its owner had unpublished stays unpublished, and nothing is fetched for it.
-  return outcome === "renamed" && !byId?.published ? "existing" : outcome;
+  // Nothing is fetched for a renamed profile that stays unpublished.
+  return outcome === "renamed" && !byId?.published && !byId?.handle.startsWith("~") ? "existing" : outcome;
 }
 
 function profileMarkdown(env: Env, p: Profile): string {
