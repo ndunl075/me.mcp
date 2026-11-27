@@ -11,6 +11,14 @@
     "PUBLIC_URL": "https://www.usefrontierdigital.com/me",
     "GITHUB_REPO_URL": "https://github.com/ndunl075/me.mcp"
   },
+  // Abuse control, free on the Workers free plan (see src/security.ts). Limits are per Cloudflare location, period 10 or 60 s.
+  // namespace_id must be unique within your Cloudflare account.
+  "ratelimits": [
+    // MCP endpoints (/mcp, /<handle>/mcp): per client IP.
+    { "name": "MCP_RATE_LIMIT", "namespace_id": "29001", "simple": { "limit": 60, "period": 60 } },
+    // POST /edit*, /auth/*: per client IP.
+    { "name": "WEB_RATE_LIMIT", "namespace_id": "29002", "simple": { "limit": 20, "period": 60 } }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -22,4 +30,7 @@
   ]
   // Secrets (set with `npx wrangler secret put NAME`):
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, SESSION_SECRET
+  // Optional, when served through a Vercel rewrite: PROXY_SECRET, the same value the rewrite sets in the
+  // `x-origin-secret` request header (vercel.json routes transform). Without it, rate limits key on CF-Connecting-IP,
+  // which behind Vercel is a shared egress IP.
 }
