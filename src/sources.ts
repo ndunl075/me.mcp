@@ -186,8 +186,9 @@ export function githubBasicAuth(env: { GITHUB_CLIENT_ID?: string; GITHUB_CLIENT_
 async function ghJson<T>(f: Fetcher, gh: GithubCtx, path: string, maxBytes = MAX_BYTES): Promise<T | null> {
   const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
   const url = `https://api.github.com${path}`;
-  let res = await f.get(url, { headers, authHeader: gh.auth, maxBytes, maxRedirects: 0 });
-  if (res?.status === 401 && gh.auth) {
+  const sent = gh.auth; // captured: concurrent calls may already have cleared gh.auth by the time this one's 401 arrives
+  let res = await f.get(url, { headers, authHeader: sent, maxBytes, maxRedirects: 0 });
+  if (res?.status === 401 && sent) {
     gh.auth = undefined;
     res = await f.get(url, { headers, maxBytes, maxRedirects: 0 });
   }
@@ -399,7 +400,9 @@ export function parseFeed(xml: string, baseUrl: string): { title: string; url: s
         if (link) break;
       }
     }
-    const title = tagText(block, "title");
+    let title = tagText(block, "title");
+    // Atom <title type="html">: the text is escaped markup, so strip the tags that decoding just revealed.
+    if (title && /<title[^>]*\btype\s*=\s*["']x?html["']/i.test(block)) title = stripTags(title).trim();
     const date = tagText(block, "pubDate") ?? tagText(block, "published") ?? tagText(block, "updated") ?? tagText(block, "dc:date");
     if (!link || !title || !date) continue;
     let abs: string;
@@ -444,25 +447,25 @@ export function sameSite(a: string, b: string): boolean {
 
 /** Blog homepage -> feed (via <link rel=alternate> or a common path) -> items. At most BLOG_BUDGET subrequests. */
 export async function fetchBlog(f: Fetcher, blogUrl: string): Promise<ActivityItem[] | null> {
-  const start = f.used;
-  const spent = () => f.used - start;
-  const feedHeaders = { Accept: "application/atom+xml, application/rss+xml, application/xml;q=0.9, text/html;q=0.5" };
+  // Own counter, not f.used: other sources of the same profile are fetched concurrently through the same Fetcher.
+  let spent = 0;
+  const get = (u: string) => (spent++, f.get(u, { headers: { Accept: "application/atom+xml, application/rss+xml, application/xml;q=0.9, text/html;q=0.5" } }));
 
-  const home = await f.get(blogUrl, { headers: feedHeaders });
+  const home = await get(blogUrl);
   if (!home || home.status !== 200) return null;
   let feed: Fetched | null = looksLikeFeed(home) ? home : null; // the "blog" field may itself be a feed URL
 
   if (!feed) {
     const link = discoverFeedLink(home.text, home.url);
-    if (link && sameSite(link, home.url) && spent() < BLOG_BUDGET) {
-      const r = await f.get(link, { headers: feedHeaders });
+    if (link && sameSite(link, home.url) && spent < BLOG_BUDGET) {
+      const r = await get(link);
       if (r && looksLikeFeed(r)) feed = r;
     }
   }
   if (!feed) {
     for (const path of FEED_FALLBACK_PATHS) {
-      if (spent() >= BLOG_BUDGET) break;
-      const r = await f.get(new URL(path, home.url).toString(), { headers: feedHeaders });
+      if (spent >= BLOG_BUDGET) break;
+      const r = await get(new URL(path, home.url).toString());
       if (r && looksLikeFeed(r)) {
         feed = r;
         break;
