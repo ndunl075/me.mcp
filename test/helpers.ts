@@ -3,11 +3,19 @@ import worker from "../src/worker";
 
 const ORIGIN = "http://localhost";
 
-/** Calls the Worker's fetch directly and waits for ctx.waitUntil work (e.g. stats counting) to finish. */
-export async function call(path: string, init: RequestInit = {}): Promise<Response> {
+let ipCounter = 0;
+
+/**
+ * Calls the Worker's fetch directly and waits for ctx.waitUntil work (e.g. stats counting) to finish.
+ * Each call gets its own client IP unless the test sets cf-connecting-ip, so the per-IP rate limits
+ * (src/security.ts) only ever fire in the tests that mean to trigger them.
+ */
+export async function call(path: string, init: RequestInit = {}, workerEnv: typeof env = env): Promise<Response> {
   const ctx = createExecutionContext();
-  const req = new Request(ORIGIN + path, { redirect: "manual", ...init });
-  const res = await worker.fetch(req, env, ctx);
+  const headers = new Headers(init.headers);
+  if (!headers.has("cf-connecting-ip")) headers.set("cf-connecting-ip", `192.0.2.${(ipCounter++ % 250) + 1}-${ipCounter}`);
+  const req = new Request(ORIGIN + path, { redirect: "manual", ...init, headers });
+  const res = await worker.fetch(req, workerEnv, ctx);
   await waitOnExecutionContext(ctx);
   return res;
 }
