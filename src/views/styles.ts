@@ -258,7 +258,7 @@ a.proj:hover{border-color:#d6d6d6}
 .chip-avatars img{width:.46em;height:.46em;border-radius:50%;box-shadow:0 0 0 .035em #fff;margin-left:-.14em;display:block;object-fit:cover;background:var(--soft)}
 .chip-avatars img:first-child,.chip-avatars i:first-child{margin-left:0}
 .chip-avatars .at{display:inline-block;text-align:left;white-space:nowrap}
-.chip-avatars .at .caret{display:inline-block;width:.07em;height:1em;background:var(--ink-2);vertical-align:-.15em;margin-left:.04em;animation:blink 1s steps(1) infinite}
+.chip-avatars .at .caret{display:inline-block;width:.09em;height:1em;background:var(--ink-2);vertical-align:-.15em;margin-left:.04em;animation:blink 1s steps(1) infinite}
 .chip-avatars .at.typing .caret{animation:none}
 
 /* visual 1: flow */
