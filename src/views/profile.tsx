@@ -1,6 +1,8 @@
 import type { Profile, Stats } from "../db";
 import { isCleanUrl } from "../db";
-import { SOURCE_DISABLE_AFTER, type ActivityRow, type SourceRow } from "../activity";
+import { SOURCE_DISABLE_AFTER, type ActivityRow, type CustomSourceRow, type SourceRow } from "../activity";
+import { KIND_NAME } from "../custom-sources";
+import { SourceForms } from "./source-form";
 import { type Ctx, Layout, CopyIcon, XIcon } from "./layout";
 import { SHARE_CARD_JS, cardDataJson } from "./sharecard";
 
@@ -30,6 +32,11 @@ export function relativeDay(iso: string, now = Date.now()): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }), timeZone: "UTC" });
 }
 
+function activitySource(it: ActivityRow): string {
+  const name = it.custom_kind ? (KIND_NAME[it.custom_kind as keyof typeof KIND_NAME] ?? it.custom_kind) : (SOURCE_NAMES[it.source] ?? it.source);
+  return it.unverified ? `${name} unverified` : name;
+}
+
 function ActivityList({ items }: { items: ActivityRow[] }) {
   return (
     <ul class="act">
@@ -38,7 +45,7 @@ function ActivityList({ items }: { items: ActivityRow[] }) {
           <time datetime={it.ts} title={it.ts.replace("T", " ").replace("Z", " UTC")}>
             {relativeDay(it.ts)}
           </time>
-          <span class="src">{SOURCE_NAMES[it.source] ?? it.source}</span>
+          <span class="src">{activitySource(it)}</span>
           {/* Titles come from other sites: link only http(s) URLs, and nofollow them like every other user-supplied link. */}
           {/^https?:\/\//i.test(it.url) && isCleanUrl(it.url) ? (
             <a href={it.url} rel="nofollow noopener" target="_blank">
@@ -54,15 +61,15 @@ function ActivityList({ items }: { items: ActivityRow[] }) {
 }
 
 /** Owner-only: which of the sources found on their GitHub profile feed the activity list. A plain form, no JS needed. */
-function SourcesCard({ ctx, sources }: { ctx: Ctx; sources: SourceRow[] }) {
+function SourcesCard({ ctx, sources, custom = [], note }: { ctx: Ctx; sources: SourceRow[]; custom?: CustomSourceRow[]; note?: string }) {
   const toggles = sources.filter((s) => s.source !== "github");
   const github = sources.find((s) => s.source === "github");
   return (
     <div class="card sources" id="sources">
       <h2>Sources</h2>
+      {note && <p class="hint">{note}</p>}
       <p class="hint">
-        Activity comes from what's listed on your GitHub profile: your public GitHub activity, plus your blog, Bluesky or Mastodon if you've added
-        them there.
+        Activity comes from your public GitHub activity, a blog, Bluesky or Mastodon listed on your GitHub profile, and anything you add here.
       </p>
       <form method="post" action={`${ctx.base}/edit/sources`} data-autosubmit>
         <div class="src-row static">
@@ -95,6 +102,7 @@ function SourcesCard({ ctx, sources }: { ctx: Ctx; sources: SourceRow[] }) {
           </div>
         )}
       </form>
+      <SourceForms base={ctx.base} back="profile" sources={custom} />
     </div>
   );
 }
@@ -109,6 +117,8 @@ export function ProfilePage({
   drawVersion = null,
   activity = [],
   sources,
+  custom,
+  sourceNote,
   fetchActivity = false,
 }: {
   ctx: Ctx;
@@ -124,6 +134,10 @@ export function ProfilePage({
   activity?: ActivityRow[];
   /** Passed only to the owner: their activity sources, for the on/off card. */
   sources?: SourceRow[];
+  /** Passed only to the owner: sources they added. */
+  custom?: CustomSourceRow[];
+  /** Owner only: result of adding or removing a source. */
+  sourceNote?: string;
   /** Owner only: the activity was never fetched, so the page asks POST /edit/refresh for it and swaps it in. */
   fetchActivity?: boolean;
 }) {
@@ -267,7 +281,7 @@ export function ProfilePage({
               )}
               {isOwner && sources && (
                 <div class="block">
-                  <SourcesCard ctx={ctx} sources={sources} />
+                  <SourcesCard ctx={ctx} sources={sources} custom={custom} note={sourceNote} />
                 </div>
               )}
             </div>

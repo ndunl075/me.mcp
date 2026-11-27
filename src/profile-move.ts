@@ -7,7 +7,7 @@
  */
 
 /** Tables keyed by (handle, ...) that are not covered by a foreign key. */
-const HANDLE_TABLES = ["call_daily", "call_clients", "activity", "sources"] as const;
+const HANDLE_TABLES = ["call_daily", "call_clients", "activity", "sources", "custom_sources"] as const;
 
 /**
  * Where a stale row is parked: `~<github_id>` (it was published) or `~<github_id>u` (its owner had unpublished it). GitHub
@@ -35,7 +35,7 @@ export function clearHandleStatements(db: D1Database, handle: string): D1Prepare
 
 /**
  * Statements that move everything stored under `from` to `to`: the profile row (all fields, key hash and calls_total
- * included, by renaming its primary key) plus call_daily, call_clients, activity and sources. `to` must not hold a profile.
+ * included, by renaming its primary key) plus call stats, activity, sources and custom sources. `to` must not hold a profile.
  * Rows left over under `to` from earlier deletions are cleared first so a primary-key clash can't abort the move.
  *
  * share_cards references profiles(handle) ON DELETE CASCADE with no ON UPDATE action, so the key can't change while a
