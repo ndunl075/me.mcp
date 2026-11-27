@@ -53,12 +53,13 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
 
         <div class="ctas">
           <a class="btn btn-dark btn-lg" href={start}>
-            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Continue with GitHub"}
+            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP server"}
           </a>
           <a class="btn btn-light btn-lg" href={example ? `${b}/${example}` : "#how"}>
             See an example
           </a>
         </div>
+        {!ctx.session && <p class="consent">Uses your public GitHub profile. Edit or delete anytime.</p>}
       </section>
 
       {/* ---------- demo: an agent calling someone's server ---------- */}
@@ -368,7 +369,7 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
           <h2 class="display">Become an MCP server</h2>
           <p>Takes about a minute. Costs nothing. Ever.</p>
           <a class="btn btn-light btn-lg" href={start}>
-            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Continue with GitHub"}
+            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP server"}
           </a>
         </div>
       </div>
