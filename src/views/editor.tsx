@@ -1,5 +1,7 @@
+import type { CustomSourceRow } from "../activity";
 import { type Profile, LIMITS, formatLinks, formatProjects } from "../db";
 import { type Ctx, Layout, CopyIcon } from "./layout";
+import { SourceForms } from "./source-form";
 
 export function aiPrompt(p: Profile): string {
   const known = [
@@ -41,11 +43,13 @@ export function EditorPage({
   p,
   notice,
   newKey,
+  custom = [],
 }: {
   ctx: Ctx;
   p: Profile;
   notice?: { kind: "ok" | "err" | "info"; text: string };
   newKey?: string;
+  custom?: CustomSourceRow[];
 }) {
   const b = ctx.base;
   const prompt = aiPrompt(p);
@@ -163,6 +167,12 @@ export function EditorPage({
             </button>
           </div>
         </form>
+
+        <div class="card sources" style="margin-top:16px" id="sources">
+          <h2>Add a source</h2>
+          <p class="hint">A feed, your site, Hacker News, dev.to or npm. Up to 6.</p>
+          <SourceForms base={b} back="edit" sources={custom} />
+        </div>
 
         <div class="card" style="margin-top:16px">
           <h2>Agent key</h2>

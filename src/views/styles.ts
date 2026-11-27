@@ -242,6 +242,10 @@ a.proj:hover{border-color:#d6d6d6}
 .src-name small{color:var(--muted);font-size:13px;margin-left:6px}
 .src-name em{display:block;font-style:normal;font-size:13px;color:#b45309;margin-top:2px}
 .src-state{font-size:13px;color:var(--muted)}
+.add-src{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
+.add-src select,.add-src input[type=text]{font:inherit;font-size:14px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;color:var(--ink)}
+.add-src input[type=text]{flex:1 1 140px;min-width:0}
+.src-row form{margin:0}
 .switch{position:relative;flex:none;width:38px;height:22px}
 .switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
 .switch i{display:block;width:100%;height:100%;border-radius:999px;background:#d4d4d4;transition:background .15s;pointer-events:none}

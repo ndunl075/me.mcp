@@ -15,7 +15,8 @@ import {
   recordCall,
   clientFromUserAgent,
 } from "./db";
-import { listActivity, type ActivityRow } from "./activity";
+import { describeSources, listActivity, listCustomSources, listSources, type ActivityRow } from "./activity";
+import { KIND_NAME } from "./custom-sources";
 import { neutralizeTitle } from "./sources";
 import { type Env, url } from "./env";
 
@@ -86,8 +87,13 @@ function field(header: string, body: string): string {
   return `${header} ${squeeze(cleanText(body)).replace(/\n(?!\n|$)/g, "\n  ")}`;
 }
 
+function sourceName(a: ActivityRow): string {
+  const base = a.custom_kind ? (KIND_NAME[a.custom_kind as keyof typeof KIND_NAME] ?? a.custom_kind) : a.source;
+  return a.unverified ? `${base} (unverified)` : base;
+}
+
 function activityLine(a: ActivityRow): string {
-  return `${day(one(a.ts))} · ${one(a.source)} · ${neutralizeTitle(one(a.title))} · ${one(a.url)}`;
+  return `${day(one(a.ts))} · ${one(sourceName(a))} · ${neutralizeTitle(one(a.title))} · ${one(a.url)}`;
 }
 
 function projectLine(pr: Profile["projects"][number]): string {
@@ -107,19 +113,32 @@ function truncate(s: string, max: number): string {
  * The complete profile as compact text: one call answers "who is this person". Empty fields are omitted; long `about`
  * is truncated. Does not include the self-published label (added by `text`).
  */
-export function formatProfile(env: Env, p: Profile, activity: ActivityRow[]): string {
+export function formatProfile(
+  env: Env,
+  p: Profile,
+  activity: ActivityRow[],
+  notes?: { sources?: string; website?: { text: string; unverified: boolean } },
+): string {
   const lines: string[] = [];
   const name = one(p.name).slice(0, LIMITS.name);
   lines.push([name ? `${name} (@${p.handle})` : `@${p.handle}`, one(p.headline), one(p.location)].filter(Boolean).join(" · "));
   if (p.now) lines.push(field(`Now (${day(iso(p.updated_at))}):`, p.now));
   if (p.bio) lines.push(field("Bio:", p.bio));
+  if (notes?.website?.text) lines.push(`Website: ${one(notes.website.text)}${notes.website.unverified ? " (unverified)" : ""}`);
   if (p.projects.length) lines.push("Projects:", ...p.projects.map(projectLine));
   if (activity.length) lines.push("Recent:", ...activity.slice(0, PROFILE_ACTIVITY).map((a) => `- ${activityLine(a)}`));
+  if (notes?.sources) lines.push(`Sources: ${one(notes.sources)}`);
   if (p.links.length) lines.push(`Links: ${linksText(p.links)}`);
   if (p.contact) lines.push(field("Contact:", p.contact));
   if (p.about) lines.push(field("About:", truncate(squeeze(cleanText(p.about)), ABOUT_PREVIEW)));
   lines.push(`Page: ${url(env, `/${p.handle}`)}`);
   return lines.join("\n");
+}
+
+async function profileNotes(env: Env, handle: string) {
+  const [builtin, custom] = await Promise.all([listSources(env.DB, handle), listCustomSources(env.DB, handle)]);
+  const notes = describeSources(builtin, custom);
+  return { sources: notes.sources || undefined, website: notes.website };
 }
 
 const MAX_TERMS = 8;
@@ -189,7 +208,8 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
     { description: "Complete profile in one call: bio, now, projects, recent activity, links, contact.", annotations: ro },
     async () => {
       track();
-      return text(formatProfile(env, p, await listActivity(env.DB, p.handle, PROFILE_ACTIVITY)));
+      const [activity, notes] = await Promise.all([listActivity(env.DB, p.handle, PROFILE_ACTIVITY), profileNotes(env, p.handle)]);
+      return text(formatProfile(env, p, activity, notes));
     },
   );
 
@@ -218,7 +238,7 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
 
   server.registerTool(
     "get_recent_activity",
-    { description: "Recent public activity (GitHub, blog, Bluesky, Mastodon), newest first.", inputSchema: activityInput, annotations: ro },
+    { description: "Recent public activity, newest first. Unverified sources are labeled.", inputSchema: activityInput, annotations: ro },
     async ({ limit }) => {
       track();
       const rows = await listActivity(env.DB, p.handle, limit ?? 10);
@@ -289,7 +309,8 @@ function networkServer(env: Env, trackFor: (handle: string) => void): McpServer 
       const p = await getPublishedProfile(env.DB, h);
       if (!p) return text(`No me.mcp profile for @${cleanLine(h).slice(0, 60)}. Try search_people.`);
       trackFor(p.handle);
-      return text(formatProfile(env, p, await listActivity(env.DB, p.handle, PROFILE_ACTIVITY)));
+      const [activity, notes] = await Promise.all([listActivity(env.DB, p.handle, PROFILE_ACTIVITY), profileNotes(env, p.handle)]);
+      return text(formatProfile(env, p, activity, notes));
     },
   );
 

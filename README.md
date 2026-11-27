@@ -32,7 +32,7 @@ Replace the URL with any profile, or use the network server (`https://www.usefro
 | `get_now` | What they are working on right now, and when it was last updated |
 | `get_projects` | Projects with links and descriptions |
 | `get_about` | Longer notes: background, opinions, FAQ |
-| `get_recent_activity(limit)` | Recent public activity (GitHub, blog, Bluesky, Mastodon), newest first, 1-15 |
+| `get_recent_activity(limit)` | Recent public activity, newest first, 1-15. Unverified sources are labeled |
 | `search(query)` | Keyword search across everything they published, snippets by section |
 | `get_contact` | How they prefer to be contacted, plus links |
 | `update_profile(...)` | Owner only. Appears when the request carries their agent key |
@@ -41,14 +41,17 @@ Replace the URL with any profile, or use the network server (`https://www.usefro
 
 Answers are compact text, not JSON: a full profile is about 300-400 tokens, and the whole `tools/list` is about 2 KB. Empty fields are left out, and a long `about` is cut with a pointer to `get_about`.
 
-### Verified sources
+### Activity sources
 
-Recent activity comes from sources that are checked against the person's own GitHub profile:
+Recent activity comes from:
 
-- GitHub public activity: always.
-- Blog (RSS/Atom), Bluesky, Mastodon: only if listed on their GitHub profile (blog field, linked social accounts).
+- GitHub public activity, always.
+- A blog (RSS/Atom), Bluesky, or Mastodon account, only when it is listed on their GitHub profile.
+- Up to 6 sources they add: a feed URL, their website, Hacker News, dev.to, or npm.
 
-Nothing else is fetched. A cron refreshes the stalest profiles every few minutes, each at most once a day. Fetching is https-only with SSRF checks, size and time caps.
+An added source is verified when it links to their GitHub profile or their me.mcp page. dev.to also verifies when `github_username` matches. npm keeps only packages whose repository is under `github.com/<login>/`. Anything that does not verify is still shown, labeled unverified.
+
+A cron refreshes the stalest profile every few minutes (one profile per run, each profile at most once a day). Fetching is https-only, with SSRF checks and size and time caps. Worst case on a cron run stays under 50 subrequests: the GitHub path is about 9 normally, and each added source is capped at 4.
 
 ### More
 

@@ -12,8 +12,8 @@ export type SourceId = "github" | "blog" | "bluesky" | "mastodon";
 export const SOURCE_IDS: readonly SourceId[] = ["github", "blog", "bluesky", "mastodon"];
 
 export interface ActivityItem {
-  source: SourceId;
-  kind: "push" | "release" | "repo" | "star" | "pr" | "post";
+  source: string;
+  kind: "push" | "release" | "repo" | "star" | "pr" | "post" | "package";
   title: string;
   url: string;
   /** ISO-8601 UTC, "2026-11-26T12:34:56Z". */
@@ -159,7 +159,7 @@ export function neutralizeTitle(t: string): string {
 }
 
 /** Cleans one item with the same rules as profile fields: one-line title <= 200 chars, http(s) URL only, valid date. */
-export function cleanItem(raw: { source: SourceId; kind: ActivityItem["kind"]; title: string; url: string; ts: string | number | Date }, now = Date.now()): ActivityItem | null {
+export function cleanItem(raw: { source: string; kind: ActivityItem["kind"]; title: string; url: string; ts: string | number | Date }, now = Date.now()): ActivityItem | null {
   const title = neutralizeTitle(cleanLine(String(raw.title).slice(0, 1000))).slice(0, TITLE_MAX).trim();
   const url = String(raw.url).trim();
   if (!title || !isCleanUrl(url)) return null;
@@ -541,6 +541,48 @@ export function discoverFeedLink(html: string, base: string): string | null {
       return new URL(href, base).toString();
     } catch {
       /* try the next one */
+    }
+  }
+  return null;
+}
+
+/** Title and meta description from an HTML page. Bounded window, same linear tag scan as feeds. */
+export function pageSummary(html: string): { title: string; description: string } {
+  const head = html.slice(0, 48_000);
+  const title = (tagText(head, "title") ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
+  let description = "";
+  for (const tag of findTags(head, "meta", 30)) {
+    const key = (attr(tag, "name") || attr(tag, "property") || "").toLowerCase();
+    if (key !== "description" && key !== "og:description") continue;
+    description = (attr(tag, "content") ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
+    break;
+  }
+  return { title, description };
+}
+
+/** Site URL a feed points at (RSS channel link, or the feed-level Atom alternate), resolved against the feed URL. */
+export function channelLink(xml: string, base: string): string | null {
+  const itemAt = xml.indexOf("<item");
+  const entryAt = xml.indexOf("<entry");
+  const cuts = [itemAt, entryAt].filter((n) => n >= 0);
+  const head = xml.slice(0, cuts.length ? Math.min(...cuts, 8000) : Math.min(xml.length, 8000));
+  const text = tagText(head, "link");
+  if (text) {
+    try {
+      return new URL(text.trim(), base).toString();
+    } catch {
+      return null;
+    }
+  }
+  for (const l of findTags(head, "link", 8)) {
+    const rel = attr(l, "rel");
+    if (rel && rel.toLowerCase() !== "alternate") continue;
+    const href = attr(l, "href");
+    if (!href) continue;
+    try {
+      return new URL(href, base).toString();
+    } catch {
+      /* next */
     }
   }
   return null;

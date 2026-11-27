@@ -14,7 +14,7 @@ Layout:
 - `src/index.tsx`: routes. `src/mcp.ts`: MCP servers (per-person and network) and output formatting.
 - `src/db.ts`: D1 access, validation and cleaning, call stats. `src/auth.ts`: GitHub OAuth, sessions, agent keys.
 - `src/cards.ts`: X share cards (drawn in the owner's browser, stored in D1).
-- `src/sources.ts`, `src/activity.ts`: verified activity sources (GitHub always; blog/Bluesky/Mastodon only if on the person's GitHub profile), fetched with SSRF checks and refreshed by cron.
+- `src/sources.ts`, `src/custom-sources.ts`, `src/activity.ts`: activity sources. GitHub always; blog/Bluesky/Mastodon only if on the person's GitHub profile; a feed, website, Hacker News, dev.to or npm when the owner adds it (unverified ones stay, labeled). Fetched with SSRF checks and refreshed by cron (one profile per run).
 - `src/views/*`: pages, CSS, client JS.
 - `migrations/`: `0001_init`, `0002_share_cards`, `0003_activity`. Add new ones in order; tests apply all of them.
 - `test/`: vitest in the Workers runtime (`@cloudflare/vitest-plugin`, config in `vitest.config.ts`). `npm test`; `npm run typecheck` also checks `test/`.

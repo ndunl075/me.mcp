@@ -302,6 +302,7 @@ export async function deleteProfile(db: D1Database, handle: string): Promise<voi
     db.prepare("DELETE FROM call_clients WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM activity WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM sources WHERE handle = ?").bind(handle),
+    db.prepare("DELETE FROM custom_sources WHERE handle = ?").bind(handle),
   ]);
 }
 
