@@ -57,9 +57,9 @@ export function EditorPage({
   return (
     <Layout ctx={ctx} title="Edit your server — me.mcp" description="Edit your me.mcp profile.">
       <div class="narrow page">
-        <h1 class="display">{p.published ? "Make it better" : first ? "Create your MCP server" : "Edit your server"}</h1>
+        <h1 class="display">{p.published ? "Make it better" : "Your server is offline"}</h1>
         <p class="lede">
-          {p.published ? "You're live at " : "You'll be live at "}
+          {p.published ? "You're live at " : "Publish to go live again at "}
           <a href={`${b}/${p.handle}`} style="text-decoration:underline">
             {ctx.publicUrl.replace(/^https?:\/\//, "")}/{p.handle}
           </a>

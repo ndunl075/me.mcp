@@ -89,6 +89,11 @@ export const CLIENT_JS = /* js */ `
     }
   }
 
+  // Forms marked data-autosubmit save as soon as a switch is flipped (the Save button still works without JS).
+  document.querySelectorAll('form[data-autosubmit]').forEach(function(f){
+    f.addEventListener('change',function(){if(f.requestSubmit)f.requestSubmit();else f.submit()});
+  });
+
   // Character counters
   document.querySelectorAll('[data-max]').forEach(function(el){
     var out=document.querySelector('[data-count-for="'+el.name+'"]');if(!out)return;

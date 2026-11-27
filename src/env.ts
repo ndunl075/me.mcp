@@ -6,6 +6,8 @@ export interface Env {
   GITHUB_CLIENT_SECRET: string;
   SESSION_SECRET: string;
   DEV_LOGIN?: string;
+  // "0" skips the background activity fetch after a sign-in created or renamed a profile (tests; emergency off switch).
+  SIGNIN_REFRESH?: string;
   // Rate limiting (wrangler.jsonc `ratelimits`). Optional so the Worker still runs where they aren't bound.
   MCP_RATE_LIMIT?: RateLimit;
   WEB_RATE_LIMIT?: RateLimit;
