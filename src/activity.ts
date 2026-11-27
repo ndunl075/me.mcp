@@ -18,10 +18,13 @@ export const REFRESH_EVERY_MS = 24 * 3600_000;
 /** After a failed GitHub fetch, retry sooner than a full day (but not on the very next run). */
 export const RETRY_AFTER_MS = 3 * 3600_000;
 /**
- * Profiles refreshed per cron run (wrangler.jsonc: every 15 min, so up to 192 profiles/day). The limit is CPU, not
- * subrequests: a profile costs ~1 ms of CPU once warm and the first one of a fresh isolate ~5 ms (Node measurement of
- * the full fetch/parse/merge path with real API payloads), against 10 ms per invocation. Subrequests are at most ~9 per
- * profile (3 GitHub + 3 blog + 1 Bluesky + 2 Mastodon), far under 50.
+ * Profiles refreshed per cron run. wrangler.jsonc runs the cron every 5 minutes: 288 runs/day x 2 = up to 576 profile
+ * refreshes/day (each at most once per 24 h, so capacity is ~576 published profiles; beyond that raise the batch or the
+ * frequency). The limit is CPU, not subrequests: a profile costs ~1 ms of CPU once warm and the first one of a fresh
+ * isolate ~5 ms (Node measurement of the full fetch/parse/merge path with real API payloads) against 10 ms per
+ * invocation, so 2 per run. Subrequests are at most ~9 per profile (3 GitHub + 3 blog + 1 Bluesky + 2 Mastodon).
+ * D1: each run reads the profiles table once to pick the stalest, so 288 runs/day is ~288 x (published profiles) rows
+ * read, within the 5M/day free allowance up to ~15k profiles.
  */
 export const REFRESH_BATCH = 2;
 /** Hard stop for the whole run, below the 50-subrequest limit, in case redirects add hops. */
@@ -129,12 +132,18 @@ export interface RefreshResult {
   ok: boolean;
   written: number;
   deleted: number;
+  /** Source bookkeeping rows written (excluding the refresh marker). */
+  sourceRows: number;
   subrequests: number;
 }
 
 /**
  * Fetches fresh activity for one profile from GitHub and whatever it vouches for there, and writes only what
  * changed. Ignores the 24 h rule (callers such as sign-in want an immediate refresh); refreshStaleProfiles applies it.
+ *
+ * The refresh marker is claimed BEFORE any fetching (as "fetched 21 h ago", i.e. retry in ~3 h) and set to now on
+ * success. A profile whose refresh throws or is killed mid-way therefore goes to the back of the queue instead of
+ * being picked first on every run.
  */
 export async function refreshProfileActivity(
   env: Pick<Env, "DB" | "GITHUB_CLIENT_ID" | "GITHUB_CLIENT_SECRET">,
@@ -145,16 +154,6 @@ export async function refreshProfileActivity(
   const now = deps.now ?? Date.now();
   const f = deps.fetcher ?? new Fetcher(PER_PROFILE_MIN_BUDGET + 3, deps.fetch);
   const before = f.used;
-
-  const [existingSources, existingActivity] = await db.batch<Record<string, unknown>>([
-    db.prepare("SELECT source, enabled, label, last_fetched FROM sources WHERE handle = ?").bind(handle),
-    db.prepare("SELECT source, kind, title, url, ts FROM activity WHERE handle = ?").bind(handle),
-  ]);
-  const srcRows = existingSources.results as unknown as { source: SourceId; enabled: number; label: string }[];
-  const skip = new Set<SourceId>(srcRows.filter((r) => r.enabled === 0).map((r) => r.source));
-
-  const got = await fetchProfileSources(f, { auth: githubBasicAuth(env) }, handle, skip);
-  const stmts: D1PreparedStatement[] = [];
   const marker = (ms: number) =>
     db
       .prepare(
@@ -162,40 +161,56 @@ export async function refreshProfileActivity(
       )
       .bind(handle, iso(ms), `@${handle}`);
 
-  if (!got.githubOk) {
-    // GitHub unreachable or rate limited: keep everything, retry in a few hours rather than a day.
-    await marker(now - (REFRESH_EVERY_MS - RETRY_AFTER_MS)).run();
-    return { ok: false, written: 0, deleted: 0, subrequests: f.used - before };
-  }
+  const [, existingSources, existingActivity] = await db.batch<Record<string, unknown>>([
+    marker(now - (REFRESH_EVERY_MS - RETRY_AFTER_MS)), // the claim
+    db.prepare("SELECT source, enabled, label FROM sources WHERE handle = ?").bind(handle),
+    db.prepare("SELECT source, kind, title, url, ts FROM activity WHERE handle = ?").bind(handle),
+  ]);
+  const srcRows = existingSources.results as unknown as { source: SourceId; enabled: number; label: string }[];
+  const actRows = existingActivity.results as unknown as ActivityRow[];
+  const skip = new Set<SourceId>(srcRows.filter((r) => r.enabled === 0).map((r) => r.source));
 
-  stmts.push(marker(now));
-  // Per-source bookkeeping: label + last_fetched for sources that were fetched, drop sources GitHub no longer lists.
+  const got = await fetchProfileSources(f, { auth: githubBasicAuth(env) }, handle, skip);
+  // GitHub unreachable or rate limited: keep everything. The claim above already schedules the retry in ~3 h.
+  if (!got.githubOk) return { ok: false, written: 0, deleted: 0, sourceRows: 0, subrequests: f.used - before };
+
+  const stmts: D1PreparedStatement[] = [marker(now)];
+  // Per-source bookkeeping, written only when something changed: new source, new label, or GitHub stopped listing it.
   const vouched = new Set<SourceId>(["github"]);
   if (got.profile?.blog) vouched.add("blog");
   if (got.socialKnown) {
     if (got.profile?.bluesky) vouched.add("bluesky");
     if (got.profile?.mastodon) vouched.add("mastodon");
   }
+  let sourceRows = 0;
   for (const id of ["blog", "bluesky", "mastodon"] as const) {
     const known = id === "blog" || got.socialKnown;
+    const row = srcRows.find((r) => r.source === id);
     if (vouched.has(id)) {
-      stmts.push(
-        db
-          .prepare(
-            "INSERT INTO sources (handle, source, label, last_fetched) VALUES (?, ?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET label = excluded.label, last_fetched = CASE WHEN ? THEN excluded.last_fetched ELSE last_fetched END",
-          )
-          .bind(handle, id, got.labels[id] ?? "", iso(now), got.items[id] ? 1 : 0),
-      );
+      const label = got.labels[id] ?? "";
+      if (!row || row.label !== label) {
+        sourceRows++;
+        stmts.push(
+          db
+            .prepare(
+              "INSERT INTO sources (handle, source, label, last_fetched) VALUES (?, ?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET label = excluded.label, last_fetched = excluded.last_fetched",
+            )
+            .bind(handle, id, label, got.items[id] ? iso(now) : null),
+        );
+      }
     } else if (known) {
-      stmts.push(db.prepare("DELETE FROM sources WHERE handle = ? AND source = ?").bind(handle, id));
-      stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, id));
+      if (row) {
+        sourceRows++;
+        stmts.push(db.prepare("DELETE FROM sources WHERE handle = ? AND source = ?").bind(handle, id));
+      }
+      if (actRows.some((r) => r.source === id)) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, id));
     }
   }
 
   const fetched = SOURCE_IDS.flatMap((id) => (vouched.has(id) && !skip.has(id) ? (got.items[id] ?? []) : []));
   // Rows of sources GitHub no longer lists were deleted above; leave them out of the merge.
   const isKnown = (id: SourceId) => id === "github" || id === "blog" || got.socialKnown;
-  const existing = (existingActivity.results as unknown as ActivityRow[]).filter((r) => vouched.has(r.source) || !isKnown(r.source));
+  const existing = actRows.filter((r) => vouched.has(r.source) || !isKnown(r.source));
   const { upserts, deletes } = planWrites(existing, fetched);
   for (const r of upserts) {
     stmts.push(
@@ -208,7 +223,7 @@ export async function refreshProfileActivity(
   }
   for (const r of deletes) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ? AND url = ?").bind(handle, r.source, r.url));
   await db.batch(stmts);
-  return { ok: true, written: upserts.length, deleted: deletes.length, subrequests: f.used - before };
+  return { ok: true, written: upserts.length, deleted: deletes.length, sourceRows, subrequests: f.used - before };
 }
 
 // ---- cron -----------------------------------------------------------------

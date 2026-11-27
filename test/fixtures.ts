@@ -19,8 +19,9 @@ export const GH_EVENTS = [
   { type: "CreateEvent", created_at: "2026-11-23T09:00:00Z", repo: { name: "zoe/new-thing" }, payload: { ref_type: "repository" } },
   { type: "CreateEvent", created_at: "2026-11-23T08:00:00Z", repo: { name: "zoe/widgets" }, payload: { ref_type: "branch", ref: "x" } },
   { type: "WatchEvent", created_at: "2026-11-22T09:00:00Z", repo: { name: "other/cool" }, payload: { action: "started" } },
-  { type: "PullRequestEvent", created_at: "2026-11-21T09:00:00Z", repo: { name: "other/cool" }, payload: { action: "closed", pull_request: { html_url: "https://github.com/other/cool/pull/7", title: "Add docs", number: 7, merged: true } } },
-  { type: "PullRequestEvent", created_at: "2026-11-20T09:00:00Z", repo: { name: "other/cool" }, payload: { action: "opened", pull_request: { html_url: "https://github.com/other/cool/pull/7", title: "Add docs", number: 7, merged: false } } },
+  { type: "PullRequestEvent", created_at: "2026-11-21T09:00:00Z", repo: { name: "other/cool" }, payload: { action: "closed", pull_request: { html_url: "https://github.com/other/cool/pull/7", title: "Add docs", number: 7, merged: true, user: { login: "someone-else" } } } },
+  { type: "PullRequestEvent", created_at: "2026-11-20T09:00:00Z", repo: { name: "other/cool" }, payload: { action: "opened", pull_request: { html_url: "https://github.com/other/cool/pull/7", title: "Add docs", number: 7, merged: false, user: { login: "someone-else" } } } },
+  { type: "PullRequestEvent", created_at: "2026-11-20T08:00:00Z", repo: { name: "other/cool" }, payload: { action: "opened", pull_request: { html_url: "https://github.com/other/cool/pull/9", title: "Fix typo", number: 9, merged: false, user: { login: "Zoe" } } } },
   { type: "IssueCommentEvent", created_at: "2026-11-19T09:00:00Z", repo: { name: "other/cool" }, payload: {} },
   { type: "PushEvent", created_at: "2026-11-19T09:00:00Z", repo: { name: "../../etc" }, payload: {} },
 ];

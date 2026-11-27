@@ -80,7 +80,7 @@ describe("refreshProfileActivity", () => {
   it("a second refresh with identical data writes nothing", async () => {
     const { fn } = zoeFetch();
     const r = await refreshProfileActivity(env, "zoe", { fetch: fn, now: NOW + 1000 });
-    expect(r).toMatchObject({ ok: true, written: 0, deleted: 0 });
+    expect(r).toMatchObject({ ok: true, written: 0, deleted: 0, sourceRows: 0 }); // no source bookkeeping rewritten either
   });
 
   it("a changed item is the only write", async () => {
@@ -187,6 +187,25 @@ describe("cron selection", () => {
     // they are now fresh, so the next run picks different ones
     const again = await refreshStaleProfiles(env, { fetch: fn, now: NOW + 60_000 });
     for (const h of again.handles) expect(summary.handles).not.toContain(h);
+  });
+
+  it("a refresh that throws goes to the back of the queue instead of wedging the cron", async () => {
+    await makeProfile("wedge-a", 9600, 1, "1999-01-01 00:00:00");
+    await makeProfile("wedge-b", 9601, 1, "1999-01-02 00:00:00");
+    const { fn } = zoeFetch({
+      "https://api.github.com/users/wedge-a": () =>
+        new Response(new ReadableStream({ pull: () => Promise.reject(new Error("body exploded")) })),
+      "https://api.github.com/users/wedge-b": (u) => (u.includes("/events") ? json([]) : u.includes("/social") ? json([]) : json({ blog: "" })),
+    });
+    const first = await refreshStaleProfiles(env, { fetch: fn, now: NOW, batch: 1 });
+    expect(first.handles).toEqual(["wedge-a"]);
+    // The claim was written before fetching: a is ~21 h old, so it is not due again and b is next.
+    const a = (await listSources(env.DB, "wedge-a")).find((s) => s.source === "github")!;
+    expect(NOW - Date.parse(a.last_fetched!)).toBe(21 * 3600_000);
+    const second = await refreshStaleProfiles(env, { fetch: fn, now: NOW + 60_000, batch: 1 });
+    expect(second.handles).toEqual(["wedge-b"]);
+    // ...and it becomes due again after the retry delay, not never.
+    expect(await selectStaleHandles(env.DB, NOW + 4 * 3600_000, 50)).toContain("wedge-a");
   });
 
   it("stops early when the shared subrequest budget runs out", async () => {

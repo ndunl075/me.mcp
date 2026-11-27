@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   LIMITS,
   cleanLine,
+  cleanText,
   type Profile,
   ProfilePatch,
   getPublishedProfile,
@@ -15,6 +16,7 @@ import {
   clientFromUserAgent,
 } from "./db";
 import { listActivity, type ActivityRow } from "./activity";
+import { neutralizeTitle } from "./sources";
 import { type Env, url } from "./env";
 
 const VERSION = "0.1.0";
@@ -55,21 +57,34 @@ const updateInput = {
 };
 
 // ---- compact text formatting ----------------------------------------------
+//
+// Structure is carried by line starts: section headers and the self-published label sit at column 0, and every line
+// of a multi-line field written by the person is indented two spaces. Text from a profile can therefore never
+// produce a line that looks like a header, an activity item or the label. Single-line fields are collapsed to one line
+// at output time as well (rows saved before cleaning existed), and activity titles cannot contain the " · " separator
+// or a URL.
 
 /** Characters of `about` included in get_profile; the rest is behind get_about. */
 export const ABOUT_PREVIEW = 600;
 /** Recent-activity lines included in get_profile. */
 export const PROFILE_ACTIVITY = 5;
 
+const one = (s: string) => cleanLine(s);
+
+/** "Header: first line" plus the rest of a multi-line field, indented so no line of it starts at column 0. */
+function field(header: string, body: string): string {
+  return `${header} ${cleanText(body).replace(/\n(?!\n|$)/g, "\n  ")}`;
+}
+
 function activityLine(a: ActivityRow): string {
-  return `${day(a.ts)} · ${a.source} · ${a.title} · ${a.url}`;
+  return `${day(one(a.ts))} · ${one(a.source)} · ${neutralizeTitle(one(a.title))} · ${one(a.url)}`;
 }
 
 function projectLine(pr: Profile["projects"][number]): string {
-  return `- ${[pr.name, pr.url].filter(Boolean).join(" ")}${pr.description ? `: ${pr.description}` : ""}`;
+  return `- ${[one(pr.name), one(pr.url)].filter(Boolean).join(" ")}${pr.description ? `: ${one(pr.description)}` : ""}`;
 }
 
-const linksText = (links: Profile["links"]) => links.map((l) => `${l.label} ${l.url}`).join("; ");
+const linksText = (links: Profile["links"]) => links.map((l) => `${one(l.label)} ${one(l.url)}`).join("; ");
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -84,15 +99,15 @@ function truncate(s: string, max: number): string {
  */
 export function formatProfile(env: Env, p: Profile, activity: ActivityRow[]): string {
   const lines: string[] = [];
-  const name = cleanLine(p.name).slice(0, LIMITS.name);
-  lines.push([name ? `${name} (@${p.handle})` : `@${p.handle}`, p.headline, p.location].filter(Boolean).join(" · "));
-  if (p.now) lines.push(`Now (${day(iso(p.updated_at))}): ${p.now}`);
-  if (p.bio) lines.push(`Bio: ${p.bio}`);
+  const name = one(p.name).slice(0, LIMITS.name);
+  lines.push([name ? `${name} (@${p.handle})` : `@${p.handle}`, one(p.headline), one(p.location)].filter(Boolean).join(" · "));
+  if (p.now) lines.push(field(`Now (${day(iso(p.updated_at))}):`, p.now));
+  if (p.bio) lines.push(field("Bio:", p.bio));
   if (p.projects.length) lines.push("Projects:", ...p.projects.map(projectLine));
   if (activity.length) lines.push("Recent:", ...activity.slice(0, PROFILE_ACTIVITY).map((a) => `- ${activityLine(a)}`));
   if (p.links.length) lines.push(`Links: ${linksText(p.links)}`);
-  if (p.contact) lines.push(`Contact: ${p.contact}`);
-  if (p.about) lines.push(`About: ${truncate(p.about, ABOUT_PREVIEW)}`);
+  if (p.contact) lines.push(field("Contact:", p.contact));
+  if (p.about) lines.push(field("About:", truncate(cleanText(p.about), ABOUT_PREVIEW)));
   lines.push(`Page: ${url(env, `/${p.handle}`)}`);
   return lines.join("\n");
 }
@@ -173,7 +188,7 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
     { description: "What they are working on right now, and when it was last updated.", annotations: ro },
     async () => {
       track();
-      return text(p.now ? `Now (${day(iso(p.updated_at))}): ${p.now}` : "Now: (not set yet)");
+      return text(p.now ? field(`Now (${day(iso(p.updated_at))}):`, p.now) : "Now: (not set yet)");
     },
   );
 
@@ -187,7 +202,7 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
     { description: "Longer notes: background, opinions, FAQ.", annotations: ro },
     async () => {
       track();
-      return text(p.about || "(nothing here yet)");
+      return text(p.about ? field("About:", p.about) : "About: (nothing here yet)");
     },
   );
 
@@ -207,7 +222,7 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
     async ({ query }) => {
       track();
       const results = searchProfile(p, query);
-      return text(results.length ? results.map((r) => `[${r.section}] ${r.text}`).join("\n") : "No matches. Try get_about or get_profile.");
+      return text(results.length ? results.map((r) => field(`[${r.section}]`, r.text)).join("\n") : "No matches. Try get_about or get_profile.");
     },
   );
 
@@ -216,7 +231,7 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
     { description: "How they prefer to be contacted, plus links.", annotations: ro },
     async () => {
       track();
-      const lines = [`Contact: ${p.contact || "(no preference set)"}`];
+      const lines = [p.contact ? field("Contact:", p.contact) : "Contact: (no preference set)"];
       if (p.links.length) lines.push(`Links: ${linksText(p.links)}`);
       return text(lines.join("\n"));
     },
@@ -233,11 +248,11 @@ function personServer(env: Env, p: Profile, track: Track, isOwner: boolean): Mcp
       async (args) => {
         const parsed = ProfilePatch.safeParse(args);
         if (!parsed.success) {
-          return text(`Invalid input: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`, true);
+          return text(`Invalid input: ${one(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "))}`, true);
         }
         await saveProfile(env.DB, p.handle, parsed.data);
         const fresh = await getProfile(env.DB, p.handle);
-        return text(`Updated: ${Object.keys(parsed.data).join(", ") || "nothing"}.${fresh?.now ? ` Now: ${fresh.now}` : ""}\nPage: ${url(env, `/${p.handle}`)}`);
+        return text(`Updated: ${Object.keys(parsed.data).join(", ") || "nothing"}.${fresh?.now ? `\n${field("Now:", fresh.now)}` : ""}\nPage: ${url(env, `/${p.handle}`)}`);
       },
     );
   }
@@ -276,7 +291,7 @@ function networkServer(env: Env, trackFor: (handle: string) => void): McpServer 
       return text(
         people.length
           ? people
-              .map((p) => [`@${p.handle}`, cleanLine(p.name), p.headline, cleanLine(p.now).slice(0, 160), url(env, `/${p.handle}`)].filter(Boolean).join(" · "))
+              .map((p) => [`@${p.handle}`, one(p.name), one(p.headline), one(p.now).slice(0, 160), url(env, `/${p.handle}`)].filter(Boolean).join(" · "))
               .join("\n")
           : "No matches.",
       );

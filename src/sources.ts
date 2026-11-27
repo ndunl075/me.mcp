@@ -25,6 +25,8 @@ export const TITLE_MAX = 200;
 export const MAX_BYTES = 128 * 1024;
 /** GitHub event payloads (PR bodies) are large: 20 events can be ~90 KB, one huge PR body more. */
 const GITHUB_EVENTS_MAX_BYTES = 192 * 1024;
+/** Fewer events per page keeps the response inside the byte cap (PR payloads carry whole PR bodies); a cut-off response is still salvaged. */
+const EVENTS_PER_PAGE = 15;
 const FETCH_TIMEOUT_MS = 6000;
 const MAX_REDIRECTS = 2;
 /** Max subrequests spent on one blog (homepage, feed, one fallback path). */
@@ -81,7 +83,7 @@ export class Fetcher {
   }
 
   /**
-   * GET a public https URL. Redirects are followed manually (each hop re-validated and counted). `authHeader` is only
+   * GET a public https URL. Redirects are followed manually (each hop re-validated, counted, and kept on the requested host or its subdomains). `authHeader` is only
    * ever sent to api.github.com. Returns null when blocked, out of budget, or the request failed.
    */
   async get(
@@ -90,9 +92,11 @@ export class Fetcher {
   ): Promise<Fetched | null> {
     let current = raw;
     const hops = opts.maxRedirects ?? MAX_REDIRECTS;
+    const verifiedHost = publicHttpsUrl(raw)?.hostname ?? "";
     for (let hop = 0; hop <= hops; hop++) {
       const u = publicHttpsUrl(current);
-      if (!u || this.used >= this.max) return null;
+      // Every hop, not just the first, must be public https and stay on the host that was asked for (or below it).
+      if (!u || !hostWithin(u.hostname, verifiedHost) || this.used >= this.max) return null;
       this.used++;
       const headers: Record<string, string> = { "User-Agent": "me.mcp", ...opts.headers };
       if (opts.authHeader && u.hostname === "api.github.com") headers.Authorization = opts.authHeader;
@@ -144,9 +148,17 @@ async function readCapped(res: Response, max: number): Promise<string> {
 
 // ---- Normalization --------------------------------------------------------
 
+/**
+ * Activity lines are "date · source · title · url". A title must not be able to fake that structure: URLs inside it
+ * become "[link]" and the "·" separator becomes "-".
+ */
+export function neutralizeTitle(t: string): string {
+  return t.replace(/https?:\/\/\S*/gi, "[link]").replace(/\u00b7/g, "-");
+}
+
 /** Cleans one item with the same rules as profile fields: one-line title <= 200 chars, http(s) URL only, valid date. */
 export function cleanItem(raw: { source: SourceId; kind: ActivityItem["kind"]; title: string; url: string; ts: string | number | Date }, now = Date.now()): ActivityItem | null {
-  const title = cleanLine(String(raw.title)).slice(0, TITLE_MAX).trim();
+  const title = neutralizeTitle(cleanLine(String(raw.title).slice(0, 1000))).slice(0, TITLE_MAX).trim();
   const url = String(raw.url).trim();
   if (!title || !isCleanUrl(url)) return null;
   const t = new Date(raw.ts).getTime();
@@ -162,6 +174,33 @@ function tryJson<T>(text: string): T | null {
   } catch {
     return null;
   }
+}
+
+/** JSON array parse that tolerates a response cut off by the byte cap: keeps the complete leading elements. */
+export function parseJsonArrayLenient<T>(text: string): T[] | null {
+  const whole = tryJson<unknown>(text);
+  if (whole !== null) return Array.isArray(whole) ? (whole as T[]) : null;
+  const start = text.indexOf("[");
+  if (start < 0 || text.slice(0, start).trim()) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let lastEnd = -1;
+  for (let i = start; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === 92) esc = true;
+      else if (c === 34) inStr = false;
+    } else if (c === 34) inStr = true;
+    else if (c === 91 || c === 123) depth++;
+    else if (c === 93 || c === 125) {
+      depth--;
+      if (depth === 1) lastEnd = i;
+      else if (depth <= 0) break;
+    }
+  }
+  return lastEnd < 0 ? null : tryJson<T[]>(text.slice(start, lastEnd + 1) + "]");
 }
 
 const firstLine = (s: string) => s.split("\n")[0] ?? "";
@@ -183,7 +222,7 @@ export function githubBasicAuth(env: { GITHUB_CLIENT_ID?: string; GITHUB_CLIENT_
  * (instead of the shared 60/hour per egress IP). If GitHub rejects the credentials (401) it retries once without
  * them rather than failing the profile.
  */
-async function ghJson<T>(f: Fetcher, gh: GithubCtx, path: string, maxBytes = MAX_BYTES): Promise<T | null> {
+async function ghJson<T>(f: Fetcher, gh: GithubCtx, path: string, maxBytes = MAX_BYTES, lenientArray = false): Promise<T | null> {
   const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
   const url = `https://api.github.com${path}`;
   const sent = gh.auth; // captured: concurrent calls may already have cleared gh.auth by the time this one's 401 arrives
@@ -193,7 +232,7 @@ async function ghJson<T>(f: Fetcher, gh: GithubCtx, path: string, maxBytes = MAX
     res = await f.get(url, { headers, maxBytes, maxRedirects: 0 });
   }
   if (!res || res.status !== 200) return null;
-  return tryJson<T>(res.text);
+  return lenientArray ? (parseJsonArrayLenient<unknown>(res.text) as T | null) : tryJson<T>(res.text);
 }
 
 interface GhEvent {
@@ -206,14 +245,14 @@ interface GhEvent {
     ref_type?: string;
     commits?: { message?: string }[];
     release?: { html_url?: string; tag_name?: string; name?: string };
-    pull_request?: { html_url?: string; title?: string; number?: number; merged?: boolean };
+    pull_request?: { html_url?: string; title?: string; number?: number; merged?: boolean; user?: { login?: string } };
   };
 }
 
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 
-/** Maps GitHub public events to activity items. Pushes collapse per repo; PRs per PR. Newest event wins per URL. */
-export function githubEventsToItems(events: GhEvent[], now = Date.now()): ActivityItem[] {
+/** Maps GitHub public events to activity items. Pushes collapse per repo; PRs per PR; `login` is the person. Newest event wins per URL. */
+export function githubEventsToItems(events: GhEvent[], login: string, now = Date.now()): ActivityItem[] {
   const out: ActivityItem[] = [];
   const seen = new Set<string>();
   const add = (kind: ActivityItem["kind"], title: string, url: string, ts: string | undefined) => {
@@ -250,7 +289,10 @@ export function githubEventsToItems(events: GhEvent[], now = Date.now()): Activi
         const pr = p.pull_request;
         if (!pr?.html_url) break;
         const verb = p.action === "opened" ? "Opened" : p.action === "closed" && pr.merged ? "Merged" : null;
-        if (verb) add("pr", `${verb} PR #${pr.number ?? ""} in ${repo}: ${pr.title ?? ""}`, pr.html_url, e.created_at);
+        // The title is the PR author's text. Only show it when that is this person; a PR by someone else that they
+        // merged gets the repo name only.
+        const own = pr.user?.login?.toLowerCase() === login.toLowerCase();
+        if (verb) add("pr", `${verb} PR #${pr.number ?? ""} in ${repo}${own && pr.title ? `: ${pr.title}` : ""}`, pr.html_url, e.created_at);
         break;
       }
     }
@@ -342,12 +384,12 @@ export async function fetchMastodon(f: Fetcher, acct: { host: string; user: stri
   if (!lookup || lookup.status !== 200) return null;
   const id = tryJson<{ id?: string }>(lookup.text)?.id;
   if (typeof id !== "string" || !/^[A-Za-z0-9]{1,40}$/.test(id)) return null;
-  const res = await f.get(`https://${acct.host}/api/v1/accounts/${id}/statuses?limit=10&exclude_replies=true&exclude_reblogs=true`, {
+  const res = await f.get(`https://${acct.host}/api/v1/accounts/${id}/statuses?limit=8&exclude_replies=true&exclude_reblogs=true`, {
     headers: { Accept: "application/json" },
   });
   if (!res || res.status !== 200) return null;
-  const data = tryJson<MastoStatus[]>(res.text);
-  return Array.isArray(data) ? mastodonToItems(data, acct.host) : null;
+  const data = parseJsonArrayLenient<MastoStatus>(res.text);
+  return data ? mastodonToItems(data, acct.host) : null;
 }
 
 // ---- Blog feeds (RSS / Atom) ----------------------------------------------
@@ -364,20 +406,89 @@ export function decodeEntities(s: string): string {
   });
 }
 
-const stripTags = (s: string) => s.replace(/<[^>]*>/g, "");
-const unCdata = (s: string) => s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
+// Everything below scans with indexOf and bounded windows, never with a regex whose repeat can rescan the rest of an
+// attacker-sized document ("<<<<..." or "<link <link ..." without ">" made `<[^>]*>` quadratic).
 
-function tagText(block: string, tag: string): string | null {
-  const m = block.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "i"));
-  return m ? decodeEntities(stripTags(unCdata(m[1]))).trim() : null;
+/** Removes <...> runs. A "<" with no later ">" is text, so the whole pass is linear. */
+export function stripTags(s: string): string {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const lt = s.indexOf("<", i);
+    if (lt < 0) break;
+    const gt = s.indexOf(">", lt + 1);
+    if (gt < 0) break;
+    out += s.slice(i, lt);
+    i = gt + 1;
+  }
+  return out + s.slice(i);
 }
 
+/** <![CDATA[x]]> -> x. An unclosed section is left as text. */
+function unCdata(s: string): string {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const open = s.indexOf("<![CDATA[", i);
+    if (open < 0) break;
+    const close = s.indexOf("]]>", open + 9);
+    if (close < 0) break;
+    out += s.slice(i, open) + s.slice(open + 9, close);
+    i = close + 3;
+  }
+  return out + s.slice(i);
+}
+
+const MAX_TAG_LEN = 500;
+
+/** Source text of up to `max` opening tags named `name` (`<link ...>`), skipping any longer than MAX_TAG_LEN. */
+export function findTags(src: string, name: string, max = 50): string[] {
+  const out: string[] = [];
+  const open = "<" + name;
+  let from = 0;
+  let gt = -1;
+  while (out.length < max) {
+    const i = src.indexOf(open, from);
+    if (i < 0) break;
+    from = i + 1;
+    const c = src.charCodeAt(i + open.length);
+    if (!(c === 62 || c === 32 || c === 9 || c === 10 || c === 13 || c === 47)) continue; // <linkfoo is another tag
+    if (gt < i) {
+      gt = src.indexOf(">", i); // cached: later candidates reuse it until they pass it
+      if (gt < 0) break;
+    }
+    if (gt - i <= MAX_TAG_LEN) out.push(src.slice(i, gt + 1));
+  }
+  return out;
+}
+
+/** Text content of the first `<tag ...>text</tag>` in `block`, decoded; null when absent, self-closing or unclosed. */
+function tagText(block: string, tag: string): string | null {
+  const open = "<" + tag;
+  let from = 0;
+  for (;;) {
+    const i = block.indexOf(open, from);
+    if (i < 0) return null;
+    from = i + 1;
+    const c = block.charCodeAt(i + open.length);
+    if (!(c === 62 || c === 32 || c === 9 || c === 10 || c === 13)) continue;
+    const gt = block.indexOf(">", i);
+    if (gt < 0) return null;
+    if (block.charCodeAt(gt - 1) === 47) continue; // <tag/>
+    const end = block.indexOf(`</${tag}>`, gt);
+    if (end < 0) return null;
+    return decodeEntities(stripTags(unCdata(block.slice(gt + 1, end)))).trim();
+  }
+}
+
+/** Attribute value from one tag's source (at most MAX_TAG_LEN chars, so the regex cannot blow up). */
 function attr(tagSrc: string, name: string): string | null {
-  const m = tagSrc.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
+  const m = tagSrc.slice(0, MAX_TAG_LEN).match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
   return m ? decodeEntities(m[1] ?? m[2] ?? "") : null;
 }
 
 const MAX_FEED_ITEMS = 15;
+const MAX_FEED_BLOCKS = 100; // blocks examined, valid or not
 const MAX_BLOCK = 30_000;
 
 /** Tiny regex extraction of <item> (RSS 2.0) and <entry> (Atom) blocks. Not an XML parser, by design (CPU). */
@@ -385,7 +496,7 @@ export function parseFeed(xml: string, baseUrl: string): { title: string; url: s
   const out: { title: string; url: string; ts: string }[] = [];
   const re = /<(item|entry)[\s>]/g; // XML is case-sensitive; also avoids lower-casing the whole document per item
   let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) && out.length < MAX_FEED_ITEMS) {
+  for (let blocks = 0; blocks < MAX_FEED_BLOCKS && out.length < MAX_FEED_ITEMS && (m = re.exec(xml)); blocks++) {
     const end = xml.indexOf(`</${m[1]}>`, m.index);
     if (end < 0) break; // truncated by the byte cap
     const block = xml.slice(m.index, Math.min(end, m.index + MAX_BLOCK));
@@ -393,7 +504,7 @@ export function parseFeed(xml: string, baseUrl: string): { title: string; url: s
 
     let link = tagText(block, "link");
     if (!link) {
-      for (const l of block.match(/<link\b[^>]*>/gi) ?? []) {
+      for (const l of findTags(block, "link", 10)) {
         const rel = attr(l, "rel");
         if (rel && rel.toLowerCase() !== "alternate") continue;
         link = attr(l, "href");
@@ -402,7 +513,7 @@ export function parseFeed(xml: string, baseUrl: string): { title: string; url: s
     }
     let title = tagText(block, "title");
     // Atom <title type="html">: the text is escaped markup, so strip the tags that decoding just revealed.
-    if (title && /<title[^>]*\btype\s*=\s*["']x?html["']/i.test(block)) title = stripTags(title).trim();
+    if (title && /^x?html$/i.test(attr(findTags(block, "title", 1)[0] ?? "", "type") ?? "")) title = stripTags(title).trim();
     const date = tagText(block, "pubDate") ?? tagText(block, "published") ?? tagText(block, "updated") ?? tagText(block, "dc:date");
     if (!link || !title || !date) continue;
     let abs: string;
@@ -418,7 +529,7 @@ export function parseFeed(xml: string, baseUrl: string): { title: string; url: s
 
 /** <link rel="alternate" type="application/rss+xml|atom+xml" href="..."> from a page's HTML, resolved against `base`. */
 export function discoverFeedLink(html: string, base: string): string | null {
-  for (const tag of html.slice(0, MAX_BYTES).match(/<link\b[^>]*>/gi) ?? []) {
+  for (const tag of findTags(html.slice(0, MAX_BYTES), "link")) {
     const rel = attr(tag, "rel");
     const type = attr(tag, "type");
     const href = attr(tag, "href");
@@ -434,12 +545,17 @@ export function discoverFeedLink(html: string, base: string): string | null {
 
 const looksLikeFeed = (r: Fetched) => r.status === 200 && /<(rss|feed|rdf:RDF)[\s>]/i.test(r.text.slice(0, 2000));
 
-/** A feed discovered from the blog page must stay on the blog's own site (same host, or a parent/sub domain of it). */
-export function sameSite(a: string, b: string): boolean {
+/** True when `host` is `verified` or a subdomain of it (a leading "www." on `verified` is ignored). Never a parent domain. */
+export function hostWithin(host: string, verified: string): boolean {
+  const base = verified.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+  const h = host.toLowerCase().replace(/\.$/, "");
+  return h === base || h.endsWith("." + base);
+}
+
+/** A URL found on a verified site (a discovered feed) must stay on that site or below it. */
+export function sameSite(candidateUrl: string, verifiedUrl: string): boolean {
   try {
-    const x = new URL(a).hostname.replace(/^www\./, "");
-    const y = new URL(b).hostname.replace(/^www\./, "");
-    return x === y || x.endsWith("." + y) || y.endsWith("." + x);
+    return hostWithin(new URL(candidateUrl).hostname, new URL(verifiedUrl).hostname);
   } catch {
     return false;
   }
@@ -457,7 +573,7 @@ export async function fetchBlog(f: Fetcher, blogUrl: string): Promise<ActivityIt
 
   if (!feed) {
     const link = discoverFeedLink(home.text, home.url);
-    if (link && sameSite(link, home.url) && spent < BLOG_BUDGET) {
+    if (link && sameSite(link, blogUrl) && spent < BLOG_BUDGET) {
       const r = await get(link);
       if (r && looksLikeFeed(r)) feed = r;
     }
@@ -505,11 +621,11 @@ export async function fetchProfileSources(f: Fetcher, gh: GithubCtx, login: stri
   const [user, social, events] = await Promise.all([
     ghJson<{ blog?: string | null }>(f, gh, `/users/${enc}`),
     ghJson<{ provider?: string; url?: string }[]>(f, gh, `/users/${enc}/social_accounts`),
-    wantEvents ? ghJson<GhEvent[]>(f, gh, `/users/${enc}/events/public?per_page=20`, GITHUB_EVENTS_MAX_BYTES) : Promise.resolve(null),
+    wantEvents ? ghJson<GhEvent[]>(f, gh, `/users/${enc}/events/public?per_page=${EVENTS_PER_PAGE}`, GITHUB_EVENTS_MAX_BYTES, true) : Promise.resolve(null),
   ]);
 
   const result: FetchedSources = { profile: null, items: {}, labels: { github: `@${login}` }, githubOk: !!user, socialKnown: Array.isArray(social) };
-  if (Array.isArray(events)) result.items.github = githubEventsToItems(events);
+  if (Array.isArray(events)) result.items.github = githubEventsToItems(events, login);
   if (!user) return result;
 
   // `blog` is free text on GitHub: accept an http(s) URL or bare host, then require a public https host.

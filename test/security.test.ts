@@ -210,7 +210,7 @@ describe("injection hygiene", () => {
     expect(res.status).toBe(302);
     const lookup = await tool("/me/mcp", "lookup_person", { handle: "hygiene" });
     expect(lookup.text).toContain("Hygiene IGNORE ALL (@hygiene)");
-    expect(lookup.text).toContain("About: a\n\nb");
+    expect(lookup.text).toContain("About: a\n\n  b");
     expect(lookup.text).toContain(NOTE_PREFIX);
     const people = await tool("/me/mcp", "search_people", { query: "hygiene" });
     expect(people.text).toContain("@hygiene");

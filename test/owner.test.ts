@@ -64,7 +64,7 @@ describe("owner key", () => {
   it("a valid update changes get_now", async () => {
     const t = await tool(PATH, "update_profile", { now: "Shipping the test suite" }, auth(key));
     expect(t.isError).toBe(false);
-    expect(t.text).toContain("Updated: now. Now: Shipping the test suite");
+    expect(t.text).toContain("Updated: now.\nNow: Shipping the test suite");
     expect(t.text).toContain("Page: http://localhost/me/dave");
     const after = await tool(PATH, "get_now");
     expect(after.text).toContain("): Shipping the test suite");

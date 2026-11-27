@@ -51,7 +51,7 @@ describe("person MCP", () => {
     expect(t.text).toContain("Projects:\n- Parsey https://github.com/alice/parsey: A parser generator");
     expect(t.text).toContain("Links: Site https://alice.example.com");
     expect(t.text).toContain("Contact: Email me at alice@example.com");
-    expect(t.text).toContain("About: Background in type theory.\n\nI love sourdough baking.");
+    expect(t.text).toContain("About: Background in type theory.\n\n  I love sourdough baking.");
     expect(t.text).toContain("Page: http://localhost/me/alice");
     expect(t.text).not.toContain("Recent:"); // no activity stored for this profile
     expect(t.text).not.toMatch(/^\s*[{[]/);

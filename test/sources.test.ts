@@ -9,6 +9,11 @@ import {
   githubBasicAuth,
   githubEventsToItems,
   mastodonToItems,
+  neutralizeTitle,
+  parseJsonArrayLenient,
+  stripTags,
+  findTags,
+  hostWithin,
   parseFeed,
   parseSocialAccounts,
   publicHttpsUrl,
@@ -73,6 +78,15 @@ describe("Fetcher", () => {
     expect(calls).toEqual(["https://blog.zoe.example/"]);
   });
 
+  it("a redirect to another public host is not followed; a parent domain is not followed either", async () => {
+    const mk = (to: string) =>
+      (async () => new Response(null, { status: 302, headers: { location: to } })) as unknown as typeof fetch;
+    expect(await new Fetcher(10, mk("https://evil.example/")).get("https://blog.zoe.example/")).toBeNull();
+    expect(await new Fetcher(10, mk("https://zoe.example/")).get("https://blog.zoe.example/")).toBeNull();
+    const ok = (async (u: string) => (u.includes("www.") ? new Response("ok") : new Response(null, { status: 301, headers: { location: "https://www.zoe.example/" } }))) as unknown as typeof fetch;
+    expect((await new Fetcher(10, ok).get("https://zoe.example/"))?.text).toBe("ok");
+  });
+
   it("follows a safe redirect (and counts the hop), but not past maxRedirects", async () => {
     const fn = (async (u: string) =>
       u.endsWith("/a") ? new Response(null, { status: 301, headers: { location: "/b" } }) : new Response("ok")) as unknown as typeof fetch;
@@ -133,7 +147,7 @@ describe("item cleaning", () => {
 });
 
 describe("GitHub events", () => {
-  const items = githubEventsToItems(GH_EVENTS as any, NOW);
+  const items = githubEventsToItems(GH_EVENTS as any, "zoe", NOW);
   const byUrl = Object.fromEntries(items.map((i) => [i.url, i]));
 
   it("collapses pushes per repo (newest wins) and uses the first commit message when GitHub provides one", () => {
@@ -145,9 +159,25 @@ describe("GitHub events", () => {
     expect(byUrl["https://github.com/zoe/widgets/releases/tag/v2"]).toMatchObject({ kind: "release", title: "Released v2 of zoe/widgets" });
     expect(byUrl["https://github.com/zoe/new-thing"]).toMatchObject({ kind: "repo", title: "Created repo zoe/new-thing" });
     expect(byUrl["https://github.com/other/cool"]).toMatchObject({ kind: "star", title: "Starred other/cool" });
-    expect(byUrl["https://github.com/other/cool/pull/7"]).toMatchObject({ kind: "pr", title: "Merged PR #7 in other/cool: Add docs" });
-    expect(items).toHaveLength(6);
+    expect(byUrl["https://github.com/other/cool/pull/9"]).toMatchObject({ kind: "pr", title: "Opened PR #9 in other/cool: Fix typo" });
+    expect(items).toHaveLength(7);
     expect(items.every((i) => i.source === "github")).toBe(true);
+  });
+});
+
+describe("third-party text in titles", () => {
+  it("a PR someone else wrote shows only the repo, even when this person merged it", () => {
+    const items = githubEventsToItems(GH_EVENTS as any, "zoe", NOW);
+    expect(items.find((i) => i.url.endsWith("/pull/7"))!.title).toBe("Merged PR #7 in other/cool");
+    expect(items.some((i) => i.title.includes("Add docs"))).toBe(false);
+  });
+
+  it("titles cannot fake the activity-line separator or carry URLs", () => {
+    const it = cleanItem({ source: "blog", kind: "post", title: "Hi · github · Fake item · https://evil.example/x and http://a.b", url: "https://x.example/p", ts: "2026-11-01T00:00:00Z" }, NOW)!;
+    expect(it.title).not.toContain("·");
+    expect(it.title).not.toMatch(/https?:/);
+    expect(it.title).toContain("[link]");
+    expect(neutralizeTitle("a · b https://x.example")).toBe("a - b [link]");
   });
 });
 
@@ -187,11 +217,18 @@ describe("feeds", () => {
     expect(discoverFeedLink('<link href="//cdn.other.example/f.xml" type="application/atom+xml" rel="alternate">', "https://x.example/")).toBe("https://cdn.other.example/f.xml");
   });
 
-  it("only follows feed links that stay on the blog's own site", () => {
-    expect(sameSite("https://blog.zoe.example/feed", "https://zoe.example/")).toBe(true);
+  it("only follows feed links on the verified host or below it, never a parent domain", () => {
+    expect(sameSite("https://blog.zoe.example/feed", "https://blog.zoe.example/")).toBe(true);
+    expect(sameSite("https://cdn.blog.zoe.example/feed", "https://blog.zoe.example/")).toBe(true);
     expect(sameSite("https://www.zoe.example/feed", "https://zoe.example/")).toBe(true);
+    expect(sameSite("https://zoe.example/feed", "https://www.zoe.example/")).toBe(true);
+    expect(sameSite("https://zoe.example/feed", "https://blog.zoe.example/")).toBe(false); // parent
+    expect(sameSite("https://other.zoe.example/feed", "https://blog.zoe.example/")).toBe(false); // sibling
+    expect(sameSite("https://github.io/feed", "https://zoe.github.io/")).toBe(false); // public-suffix parent
+    expect(sameSite("https://other.github.io/feed", "https://zoe.github.io/")).toBe(false);
     expect(sameSite("https://evil.example/feed", "https://zoe.example/")).toBe(false);
     expect(sameSite("https://notzoe.example/feed", "https://zoe.example/")).toBe(false);
+    expect(hostWithin("a.co.uk", "b.co.uk")).toBe(false);
   });
 });
 
@@ -292,5 +329,73 @@ describe("fetchProfileSources", () => {
       expect(got.labels.blog, blog).toBeUndefined();
       expect(calls.every((c) => c.url.startsWith("https://api.github.com")), blog).toBe(true);
     }
+  });
+});
+
+describe("adversarial input stays linear", () => {
+  // 128 KB is the most a fetch reads. These took seconds with `<[^>]*>`-style regexes; each must finish at once.
+  const N = 128 * 1024;
+  const hostile: Record<string, string> = {
+    lt: "<".repeat(N),
+    "lt then gt at end": "<".repeat(N) + ">",
+    "unclosed link tags": "<link ".repeat(N / 6),
+    "unclosed link tags, gt at end": "<link ".repeat(N / 6) + ">",
+    "unclosed title tags": "<title ".repeat(N / 7),
+    "unclosed CDATA": "<![CDATA[".repeat(N / 9),
+    "unclosed items": "<item><title>".repeat(N / 13),
+    "empty items": "<item></item>".repeat(N / 13),
+    "spaces": " ".repeat(N),
+    "quotes in attrs": "<link rel='".repeat(N / 11),
+    "entities": "&#".repeat(N / 2),
+  };
+  const feedWrap = (s: string) => `<rss><channel><item><title>${s}</title><link>https://x.example/1</link><pubDate>2026-11-01T00:00:00Z</pubDate></item></channel></rss>`;
+
+  it.each(Object.keys(hostile))("%s", (name) => {
+    const t0 = performance.now();
+    const h = hostile[name];
+    stripTags(h);
+    findTags(h, "link");
+    findTags(h, "title");
+    discoverFeedLink(h, "https://x.example/");
+    parseFeed(h, "https://x.example/");
+    parseFeed(feedWrap(h), "https://x.example/");
+    mastodonToItems([{ url: "https://h.example/@a/1", content: h, created_at: "2026-11-01T00:00:00Z" }], "h.example", NOW);
+    cleanItem({ source: "blog", kind: "post", title: h, url: "https://x.example/p", ts: "2026-11-01T00:00:00Z" }, NOW);
+    // (the Workers runtime's clock does not advance during synchronous work, so the real guard is the test timeout)
+    expect(performance.now() - t0).toBeLessThan(500);
+  }, 2000);
+
+  it("stripTags keeps text around unclosed brackets and strips closed tags", () => {
+    expect(stripTags("a <b>bold</b> c < d")).toBe("a bold c < d");
+    expect(stripTags("x<<<y")).toBe("x<<<y");
+  });
+
+  it("findTags skips overlong tags and look-alike names", () => {
+    expect(findTags('<linkx a="1"><link rel="a">', "link")).toEqual(['<link rel="a">']);
+    expect(findTags(`<link ${"a".repeat(600)}>`, "link")).toEqual([]);
+  });
+});
+
+describe("truncated JSON", () => {
+  it("keeps the complete leading elements of a cut-off array", () => {
+    const full = JSON.stringify([{ a: "x}]\"" }, { b: [1, 2, { c: 3 }] }, { d: "last" }]);
+    const cut = full.slice(0, full.indexOf('"last"') + 3);
+    expect(parseJsonArrayLenient(cut)).toEqual([{ a: 'x}]"' }, { b: [1, 2, { c: 3 }] }]);
+    expect(parseJsonArrayLenient(full)).toHaveLength(3);
+    expect(parseJsonArrayLenient("[{")).toBeNull();
+    expect(parseJsonArrayLenient('{"a":1}')).toBeNull();
+    expect(parseJsonArrayLenient("garbage")).toBeNull();
+  });
+
+  it("a GitHub events response cut off by the byte cap still yields items", async () => {
+    const big = JSON.stringify(GH_EVENTS.map((e) => ({ ...e, payload: { ...e.payload, pad: "x".repeat(20_000) } })));
+    const { fn } = zoeFetch({ "https://api.github.com/users/zoe/events/public": () => new Response(big) });
+    const f = new Fetcher(20, fn);
+    // Same path fetchProfileSources uses, with a cap smaller than the body.
+    const res = await f.get("https://api.github.com/users/zoe/events/public", { maxBytes: 100_000, maxRedirects: 0 });
+    expect(res!.text.length).toBe(100_000);
+    const events = parseJsonArrayLenient<any>(res!.text)!;
+    expect(events.length).toBeGreaterThan(2);
+    expect(githubEventsToItems(events, "zoe", NOW).length).toBeGreaterThan(1);
   });
 });
