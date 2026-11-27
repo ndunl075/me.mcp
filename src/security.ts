@@ -85,15 +85,41 @@ function cameThroughProxy(req: Request, env: Env): boolean {
   return diff === 0;
 }
 
-/** IPv6 clients control a whole /64, so they are keyed by it; IPv4 and anything unparseable are used as-is. */
+/** "1.2.3.4" as two hex groups ("102", "304"), or null if it is not a plain dotted quad. */
+function quadToGroups(q: string): [string, string] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(q);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return null;
+  return [((o[0] << 8) | o[1]).toString(16), ((o[2] << 8) | o[3]).toString(16)];
+}
+
+/**
+ * IPv6 clients control a whole /64, so they are keyed by it. IPv4-mapped (::ffff:a.b.c.d or ::ffff:102:304) and the
+ * deprecated IPv4-compatible (::a.b.c.d) forms are keyed as the embedded IPv4 address, so they share a bucket with the
+ * same client's plain IPv4 and don't all collapse into 0:0:0:0::/64. IPv4 and anything unparseable are used as-is.
+ */
 export function ipKey(ip: string): string {
-  if (!ip.includes(":") || ip.includes(".")) return ip;
-  const [head, tail] = ip.toLowerCase().split("::");
+  if (!ip.includes(":")) return ip;
+  let addr = ip.toLowerCase();
+  if (addr.includes(".")) {
+    const at = addr.lastIndexOf(":");
+    const g = quadToGroups(addr.slice(at + 1));
+    if (!g) return ip;
+    addr = `${addr.slice(0, at + 1)}${g[0]}:${g[1]}`;
+  }
+  const [head, tail, extra] = addr.split("::");
+  if (extra !== undefined) return ip;
   const h = head ? head.split(":") : [];
   const t = tail === undefined ? [] : tail ? tail.split(":") : [];
   const groups = tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
   if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return ip;
-  return groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":") + "::/64";
+  const n = groups.map((g) => parseInt(g, 16));
+  const zeros5 = n.slice(0, 5).every((v) => v === 0);
+  if (zeros5 && (n[5] === 0xffff || (n[5] === 0 && n[6] !== 0))) {
+    return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;
+  }
+  return n.slice(0, 4).map((v) => v.toString(16)).join(":") + "::/64";
 }
 
 /**

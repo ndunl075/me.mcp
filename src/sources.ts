@@ -164,7 +164,8 @@ export function cleanItem(raw: { source: SourceId; kind: ActivityItem["kind"]; t
   const url = String(raw.url).trim();
   if (!title || !isCleanUrl(url)) return null;
   const t = new Date(raw.ts).getTime();
-  if (!Number.isFinite(t)) return null;
+  // Dates before 1970 (negative epoch) are never real activity, and years before 0 would format as "-000001-...".
+  if (!Number.isFinite(t) || t < 0) return null;
   // A feed claiming a date in the future must not pin itself to the top forever.
   const ts = new Date(Math.min(t, now)).toISOString().slice(0, 19) + "Z";
   return { source: raw.source, kind: raw.kind, title, url, ts, ...(t > now ? { clamped: true } : {}) };

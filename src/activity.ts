@@ -75,7 +75,7 @@ export async function listActivity(db: D1Database, handle: string, limit = KEEP_
 export async function listSources(db: D1Database, handle: string): Promise<SourceRow[]> {
   try {
     const { results } = await db
-      .prepare("SELECT source, enabled, label, last_fetched, failures FROM sources WHERE handle = ? ORDER BY source")
+      .prepare("SELECT source, enabled, label, last_fetched, failures FROM sources WHERE handle = ? AND failures >= 0 ORDER BY source")
       .bind(handle)
       .all<{ source: SourceId; enabled: number; label: string; last_fetched: string | null; failures: number }>();
     return results.map((r) => ({ ...r, enabled: r.enabled === 1 }));
@@ -83,6 +83,13 @@ export async function listSources(db: D1Database, handle: string): Promise<Sourc
     return [];
   }
 }
+
+/**
+ * `failures` value marking a row whose source GitHub no longer lists: a tombstone that keeps an off switch (the owner's
+ * or the auto-disable) alive, so the source does not come back switched on if GitHub lists it again. Never shown
+ * (listSources skips it); reuses the existing column, so no migration.
+ */
+const UNLISTED = -1;
 
 /** Owner's on/off switch for one source. Turning one off also removes what it contributed. */
 export async function setSourceEnabled(db: D1Database, handle: string, source: SourceId, enabled: boolean): Promise<void> {
@@ -209,10 +216,11 @@ export async function refreshProfileActivity(
     if (vouched.has(id)) {
       const label = got.labels[id] ?? "";
       const ok = !!got.items[id];
-      const prev = row?.failures ?? 0;
+      const stored = row?.failures ?? 0;
+      const prev = Math.max(0, stored); // a tombstone (UNLISTED) starts again at zero failures, still switched off
       const fails = skip.has(id) ? prev : ok ? 0 : prev + 1;
       const disable = !skip.has(id) && !ok && fails >= SOURCE_DISABLE_AFTER;
-      if (!row || row.label !== label || fails !== prev || disable) {
+      if (!row || row.label !== label || fails !== stored || disable) {
         sourceRows++;
         stmts.push(
           db
@@ -227,7 +235,13 @@ export async function refreshProfileActivity(
         if (actRows.some((r) => r.source === id)) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, id));
       }
     } else if (known) {
-      if (row) {
+      if (row && row.enabled === 0) {
+        // Keep the off switch: mark the row unlisted instead of deleting it.
+        if (row.failures !== UNLISTED) {
+          sourceRows++;
+          stmts.push(db.prepare("UPDATE sources SET failures = ? WHERE handle = ? AND source = ?").bind(UNLISTED, handle, id));
+        }
+      } else if (row) {
         sourceRows++;
         stmts.push(db.prepare("DELETE FROM sources WHERE handle = ? AND source = ?").bind(handle, id));
       }
