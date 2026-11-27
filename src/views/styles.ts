@@ -231,7 +231,7 @@ a.proj:hover{border-color:#d6d6d6}
 .act .src{flex:none;min-width:72px;text-align:center;font-size:11.5px;font-weight:600;letter-spacing:.03em;color:var(--muted);background:var(--soft);border-radius:6px;padding:2px 8px}
 .act a,.act li>span:last-child{min-width:0;overflow-wrap:anywhere}
 .act a:hover{text-decoration:underline}
-@media (max-width:560px){.act li{flex-wrap:wrap;row-gap:4px}.act a,.act li>span:last-child{flex-basis:100%}}
+@media (max-width:560px){.act li{flex-wrap:wrap;row-gap:4px;align-items:center}.act time{width:auto;min-width:64px}.act a,.act li>span:last-child{flex-basis:100%}}
 .sources{padding:18px 20px;background:var(--soft-2)}
 .sources .hint{margin-bottom:10px;font-size:14px}
 .src-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line-2);font-size:15px;cursor:pointer}

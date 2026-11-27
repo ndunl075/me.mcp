@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { call, signIn, tool } from "./helpers";
-import { oauthSignIn } from "./oauth";
+import { githubStub, oauthSignIn } from "./oauth";
 import { relativeDay } from "../src/views/profile";
 
 const db = env.DB;
@@ -77,7 +77,31 @@ describe("activity fetched at sign-in", () => {
     expect(await one("SELECT handle FROM profiles WHERE github_id = 5150")).toEqual({ handle: "~5150" });
   });
 
-  it("the dev login does the same, and SIGNIN_REFRESH=0 switches it off", async () => {
+  it("switching a source back on fetches it right away", async () => {
+    const { cookie } = await oauthSignIn({ login: "zoe", id: 5153 }); // already exists: just a session
+    const blogRows = async () => (await one<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE handle = 'zoe' AND source = 'blog'"))!.n;
+    await post("/me/edit/sources", cookie, { on: ["bluesky", "mastodon"] });
+    expect(await blogRows()).toBe(0);
+
+    const stub = githubStub({ login: "zoe", id: 5153 });
+    const real = globalThis.fetch;
+    globalThis.fetch = stub.fn;
+    try {
+      const body = new URLSearchParams({ on: "blog" }).toString();
+      const res = await call(
+        "/me/edit/sources",
+        { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" }, body },
+        { ...env, SIGNIN_REFRESH: "1" } as typeof env,
+      );
+      expect(res.status).toBe(302);
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(await blogRows()).toBeGreaterThan(0);
+    expect(stub.calls.length).toBeLessThanOrEqual(12);
+  });
+
+  it("SIGNIN_REFRESH=0 switches the background fetch off (dev login)", async () => {
     const off = await signIn("devperson");
     expect(off).toContain("memcp_session=");
     expect(await one("SELECT 1 FROM sources WHERE handle = 'devperson'")).toBeNull();

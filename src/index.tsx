@@ -158,13 +158,13 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
   // ---- auth -----------------------------------------------------------------
 
   /**
-   * After a sign-in that created or renamed a profile, fetch its recent activity in the background so the server has
-   * real content right away. waitUntil keeps the redirect fast; any failure is logged and never reaches the visitor.
+   * After a sign-in that created or renamed a profile (or a source was switched back on), fetch its recent activity in
+   * the background so the server has real content right away. waitUntil keeps the redirect fast; any failure is logged and never reaches the visitor.
    * Subrequests for the whole callback: 3 for the sign-in (token, /user, repos) plus at most 12 for the refresh (its
    * Fetcher is capped there), so at most 15 of the 50 allowed. SIGNIN_REFRESH=0 turns it off (tests, emergencies).
    */
-  const refreshAfterSignIn = (c: { env: Env; executionCtx: { waitUntil(p: Promise<unknown>): void } }, handle: string, outcome: SignInOutcome) => {
-    if (outcome === "existing" || c.env.SIGNIN_REFRESH === "0") return;
+  const refreshInBackground = (c: { env: Env; executionCtx: { waitUntil(p: Promise<unknown>): void } }, handle: string) => {
+    if (c.env.SIGNIN_REFRESH === "0") return;
     try {
       c.executionCtx.waitUntil(
         refreshProfileActivity(c.env, handle).then(
@@ -213,7 +213,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
       recent,
     });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, user.id), cookieOpts(30 * 86400));
-    refreshAfterSignIn(c, handle, outcome);
+    if (outcome !== "existing") refreshInBackground(c, handle);
     return c.redirect(url(c.env, `/${handle}${outcome === "created" ? "?welcome=1" : ""}`));
   });
 
@@ -235,7 +235,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
       recent: { name: "me.mcp", description: "Setting up my MCP server." },
     });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, id), cookieOpts(30 * 86400));
-    refreshAfterSignIn(c, handle, outcome);
+    if (outcome !== "existing") refreshInBackground(c, handle);
     return c.redirect(url(c.env, `/${handle}${outcome === "created" ? "?welcome=1" : ""}`));
   });
 
@@ -346,11 +346,16 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
     const raw = form.on;
     const on = new Set((Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]).filter((v): v is string => typeof v === "string"));
     const rows = await listSources(c.env.DB, p.handle);
+    let turnedOn = false;
     for (const r of rows) {
       if (!TOGGLEABLE.includes(r.source)) continue; // GitHub is always on, and unknown ids are ignored
       const want = on.has(r.source);
-      if (want !== r.enabled) await setSourceEnabled(c.env.DB, p.handle, r.source, want);
+      if (want === r.enabled) continue;
+      await setSourceEnabled(c.env.DB, p.handle, r.source, want);
+      if (want) turnedOn = true;
     }
+    // Switching a source back on fetches it now instead of at the next daily refresh.
+    if (turnedOn) refreshInBackground(c, p.handle);
     return c.redirect(url(c.env, `/${p.handle}#sources`));
   });
 
