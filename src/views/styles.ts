@@ -224,6 +224,9 @@ a.proj:hover{border-color:#d6d6d6}
 .links{display:flex;flex-wrap:wrap;gap:8px}
 .links a{border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:14px}
 .links a:hover{background:var(--soft)}
+.fetching{margin:28px 0 0;font-size:14px;color:var(--muted)}
+.fetching::before{content:"";display:inline-block;width:10px;height:10px;margin-right:8px;border:2px solid var(--line);border-top-color:var(--ink);border-radius:50%;vertical-align:-1px;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .act{list-style:none;margin:0;padding:0}
 .act li{display:flex;gap:12px;align-items:baseline;padding:9px 0;border-top:1px solid var(--line-2);font-size:15px;color:var(--ink-2);min-width:0}
 .act li:first-child{border-top:0;padding-top:0}
@@ -355,5 +358,5 @@ a.proj:hover{border-color:#d6d6d6}
 .ui-url .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ui-stat{font-size:13px;color:var(--muted)}
 .ui-stat b{font-family:var(--display);font-weight:400;font-size:18px;color:var(--ink)}
-@media (prefers-reduced-motion:reduce){.flow-wire i,.srv-live i,.chip-term .cur{animation:none}.toolcall,.msg-ai{animation:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.fetching::before{animation:none}.flow-wire i,.srv-live i,.chip-term .cur{animation:none}.toolcall,.msg-ai{animation:none;opacity:1}}
 `;

@@ -44,6 +44,8 @@ describe("GitHub rename", () => {
     expect(await count("call_clients", "newbie")).toBe(1);
     expect(await count("activity", "newbie")).toBe(1);
     expect(await count("sources", "newbie")).toBe(1);
+    // ...with its refresh marker cleared, so the cron and the owner's page fetch it first
+    expect(await one("SELECT last_fetched FROM sources WHERE handle = 'newbie' AND source = 'github'")).toEqual({ last_fetched: null });
     // The share card is dropped, not carried (it regenerates on the next visit)
     expect(await count("share_cards", "newbie")).toBe(0);
 
@@ -80,7 +82,7 @@ describe("GitHub rename", () => {
   it("is all-or-nothing: a failure part-way leaves the old profile untouched", async () => {
     await oauthSignIn({ login: "atomic", id: 7004 });
     await seed("atomic");
-    // Fails on the last step of the move (activity), after the profile row and call stats were already updated.
+    // The move fails at its activity step, after the profile row, call_daily and call_clients were already updated.
     await db.exec("CREATE TRIGGER boom BEFORE UPDATE ON activity WHEN NEW.handle = 'boom' BEGIN SELECT RAISE(ABORT, 'boom'); END");
     try {
       const r = await oauthSignIn({ login: "boom", id: 7004 });
@@ -154,6 +156,20 @@ describe("reused login", () => {
     expect((await call("/me/~8101u")).status).toBe(404);
     await oauthSignIn({ login: "quiet-two", id: 8101 });
     expect(await one("SELECT handle, published FROM profiles WHERE github_id = 8101")).toEqual({ handle: "quiet-two", published: 0 });
+  });
+
+  it("a new profile never inherits leftovers stored under its handle", async () => {
+    await db.batch([
+      db.prepare("INSERT INTO call_daily (handle, day, count) VALUES ('leftover', '2026-11-25', 99)"),
+      db.prepare("INSERT INTO call_clients (handle, client, count) VALUES ('leftover', 'Claude', 99)"),
+      db.prepare("INSERT INTO activity (handle, source, kind, title, url, ts) VALUES ('leftover', 'blog', 'post', 'Old post', 'https://old.example/p', '2026-11-25T10:00:00Z')"),
+      db.prepare("INSERT INTO sources (handle, source, label, last_fetched) VALUES ('leftover', 'github', '@leftover', '2026-11-25T10:00:00Z')"),
+    ]);
+    const r = await oauthSignIn({ login: "leftover", id: 8201 });
+    expect(r.res.headers.get("location")).toContain("welcome=1");
+    for (const t of ["call_daily", "call_clients", "activity", "sources", "share_cards"]) expect(await count(t, "leftover"), t).toBe(0);
+    expect(await one("SELECT github_id FROM profiles WHERE handle = 'leftover'")).toEqual({ github_id: 8201 });
+    expect(await (await call("/me/leftover", { headers: { Cookie: r.cookie } })).text()).not.toContain("Old post");
   });
 
   it("handles a rename into a login the previous owner left behind, in one go", async () => {

@@ -90,8 +90,10 @@ export const CLIENT_JS = /* js */ `
   }
 
   // Forms marked data-autosubmit save as soon as a switch is flipped (the Save button still works without JS).
-  document.querySelectorAll('form[data-autosubmit]').forEach(function(f){
-    f.addEventListener('change',function(){if(f.requestSubmit)f.requestSubmit();else f.submit()});
+  // Delegated, so it also covers forms swapped in after the activity fetch.
+  document.addEventListener('change',function(e){
+    var f=e.target&&e.target.form;
+    if(f&&f.hasAttribute('data-autosubmit')){if(f.requestSubmit)f.requestSubmit();else f.submit()}
   });
 
   // Character counters

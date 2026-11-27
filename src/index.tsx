@@ -36,7 +36,7 @@ import { CARD_MAX_BYTES, cardVersionOf, defaultCardResponse, getCardVersion, pro
 import { handleNetworkMcp, handlePersonMcp } from "./mcp";
 import { listActivity, listSources, refreshProfileActivity, setSourceEnabled } from "./activity";
 import type { SourceId } from "./sources";
-import { moveHandleStatements, placeholderHandle, wasPublishedBeforeParking } from "./profile-move";
+import { clearHandleStatements, moveHandleStatements, placeholderHandle, wasPublishedBeforeParking } from "./profile-move";
 import type { Ctx } from "./views/layout";
 import { Layout } from "./views/layout";
 import { Landing } from "./views/landing";
@@ -44,6 +44,8 @@ import { iconResponse } from "./views/icons";
 import { ProfilePage } from "./views/profile";
 import { EditorPage } from "./views/editor";
 
+/** /edit/refresh does nothing for a profile fetched more recently than this. */
+const REFRESH_MIN_GAP_MS = 10 * 60_000;
 const TOGGLEABLE: readonly SourceId[] = ["blog", "bluesky", "mastodon"];
 
 export function createApp(base: string) {
@@ -70,6 +72,20 @@ export function createApp(base: string) {
   app.get("/:handle/card.png", (c) =>
     profileCardResponse(c.req.raw, c.env.DB, c.req.param("handle").toLowerCase(), c.req.query("v") ?? null),
   );
+
+  // CSRF hardening on top of SameSite=Lax: a state-changing request to an owner route must come from this site. Browsers
+  // always send Origin on cross-site POSTs, so a mismatching Origin (or, without one, a Sec-Fetch-Site other than
+  // same-origin) is refused. Requests with neither header (curl, tests) aren't browser-driven cross-site attacks.
+  const expectedOrigin = (env: Env) => new URL(env.PUBLIC_URL).origin;
+  app.use("*", async (c, next) => {
+    if (c.req.method === "POST" && /^\/edit(\/|$)/.test(new URL(c.req.url).pathname.slice(base.length))) {
+      const origin = c.req.header("origin");
+      const site = c.req.header("sec-fetch-site");
+      const bad = origin !== undefined ? origin !== expectedOrigin(c.env) : site !== undefined && site !== "same-origin" && site !== "none";
+      if (bad) return c.text("Cross-site request refused.", 403);
+    }
+    await next();
+  });
 
   app.use("*", async (c, next) => {
     c.set("session", await verifySession(c.env, getCookie(c, SESSION_COOKIE)));
@@ -135,6 +151,9 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
         drawVersion={drawVersion}
         activity={activity}
         sources={isOwner ? sources : undefined}
+        // Owner of a live profile whose activity was never fetched (a new profile or a rename), or just arriving from
+        // sign-in: the page asks POST /edit/refresh for it (its own invocation and CPU budget) and swaps the result in.
+        fetchActivity={isOwner && p.published && (welcome || !sources.find((x) => x.source === "github")?.last_fetched)}
       />);
   });
 
@@ -156,26 +175,6 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
   });
 
   // ---- auth -----------------------------------------------------------------
-
-  /**
-   * After a sign-in that created or renamed a profile (or a source was switched back on), fetch its recent activity in
-   * the background so the server has real content right away. waitUntil keeps the redirect fast; any failure is logged and never reaches the visitor.
-   * Subrequests for the whole callback: 3 for the sign-in (token, /user, repos) plus at most 12 for the refresh (its
-   * Fetcher is capped there), so at most 15 of the 50 allowed. SIGNIN_REFRESH=0 turns it off (tests, emergencies).
-   */
-  const refreshInBackground = (c: { env: Env; executionCtx: { waitUntil(p: Promise<unknown>): void } }, handle: string) => {
-    if (c.env.SIGNIN_REFRESH === "0") return;
-    try {
-      c.executionCtx.waitUntil(
-        refreshProfileActivity(c.env, handle).then(
-          () => undefined,
-          (e) => console.error(`sign-in activity refresh failed for ${handle}`, e),
-        ),
-      );
-    } catch (e) {
-      console.error("sign-in activity refresh not scheduled", e);
-    }
-  };
 
   const cookieOpts = (maxAge: number) =>
     ({ path: cookiePath, httpOnly: true, secure: true, sameSite: "Lax", maxAge }) as const;
@@ -201,7 +200,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
 
     if (RESERVED.has(handle)) return c.text(`Sorry — "${handle}" is a reserved path on me.mcp.`, 400);
 
-    const outcome = await signIn(c.env.DB, {
+    const created = await signIn(c.env.DB, {
       handle,
       github_id: user.id,
       name: user.name ?? user.login,
@@ -213,8 +212,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
       recent,
     });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, user.id), cookieOpts(30 * 86400));
-    if (outcome !== "existing") refreshInBackground(c, handle);
-    return c.redirect(url(c.env, `/${handle}${outcome === "created" ? "?welcome=1" : ""}`));
+    return c.redirect(url(c.env, `/${handle}${created ? "?welcome=1" : ""}`));
   });
 
   // Local development only: sign in as anyone without GitHub.
@@ -223,7 +221,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
     const handle = (c.req.query("login") ?? "dev").toLowerCase().replace(/[^a-z0-9-]/g, "");
     const id = parseInt((await sha256(handle)).replace(/[^0-9]/g, "").slice(0, 9) || "1", 10);
     if (!handle || RESERVED.has(handle)) return c.text("Bad login", 400);
-    const outcome = await signIn(c.env.DB, {
+    const created = await signIn(c.env.DB, {
       handle,
       github_id: id,
       name: handle,
@@ -235,8 +233,7 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
       recent: { name: "me.mcp", description: "Setting up my MCP server." },
     });
     setCookie(c, SESSION_COOKIE, await signSession(c.env, handle, id), cookieOpts(30 * 86400));
-    if (outcome !== "existing") refreshInBackground(c, handle);
-    return c.redirect(url(c.env, `/${handle}${outcome === "created" ? "?welcome=1" : ""}`));
+    return c.redirect(url(c.env, `/${handle}${created ? "?welcome=1" : ""}`));
   });
 
   app.get("/auth/logout", (c) => {
@@ -338,6 +335,26 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
     return c.body(null, 204);
   });
 
+  // Fetches the owner's activity now. The profile page calls it (fetch, no form) right after sign-in, so the fetching runs in
+  // its own invocation with its own CPU budget instead of inside the OAuth callback. Throttled: a profile fetched in the
+  // last 10 minutes (or backed off after failures) is left alone. The cron stays the fallback.
+  app.post("/edit/refresh", async (c) => {
+    c.header("Cache-Control", "no-store");
+    if (!c.get("session")) return c.json({ error: "Sign in required." }, 401);
+    const p = await requireOwner(c);
+    if (!p) return c.json({ error: "Not your profile." }, 403);
+    if (!p.published) return c.json({ error: "Publish your profile first." }, 403);
+    const github = (await listSources(c.env.DB, p.handle)).find((x) => x.source === "github");
+    if (github?.last_fetched && Date.parse(github.last_fetched) > Date.now() - REFRESH_MIN_GAP_MS) return c.json({ changed: false, throttled: true });
+    try {
+      const r = await refreshProfileActivity(c.env, p.handle);
+      return c.json({ changed: r.ok });
+    } catch (e) {
+      console.error(`activity refresh failed for ${p.handle}`, e);
+      return c.json({ changed: false });
+    }
+  });
+
   // Owner's on/off switches for blog / Bluesky / Mastodon. A plain form: the boxes ticked are the sources that stay on.
   app.post("/edit/sources", async (c) => {
     const p = await requireOwner(c);
@@ -346,16 +363,11 @@ Sign in with GitHub at ${u}/ and your server is live right away. Free and open s
     const raw = form.on;
     const on = new Set((Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]).filter((v): v is string => typeof v === "string"));
     const rows = await listSources(c.env.DB, p.handle);
-    let turnedOn = false;
     for (const r of rows) {
       if (!TOGGLEABLE.includes(r.source)) continue; // GitHub is always on, and unknown ids are ignored
       const want = on.has(r.source);
-      if (want === r.enabled) continue;
-      await setSourceEnabled(c.env.DB, p.handle, r.source, want);
-      if (want) turnedOn = true;
+      if (want !== r.enabled) await setSourceEnabled(c.env.DB, p.handle, r.source, want);
     }
-    // Switching a source back on fetches it now instead of at the next daily refresh.
-    if (turnedOn) refreshInBackground(c, p.handle);
     return c.redirect(url(c.env, `/${p.handle}#sources`));
   });
 
@@ -451,33 +463,32 @@ function sanitizeSeed(d: Seed) {
   };
 }
 
-export type SignInOutcome = "created" | "renamed" | "existing";
-
 /**
- * Sign-in for a GitHub identity. Nothing is ever deleted here; every change is one D1 batch, so a failure leaves the
- * data as it was.
+ * Sign-in for a GitHub identity. Returns true only when a new profile was created (the welcome screen). Nothing is ever
+ * deleted here; every change is one D1 batch, so a failure leaves the data as it was.
  *  - Row for this handle already belongs to this github_id: nothing to do.
  *  - This github_id has a row under another handle (the person renamed on GitHub): the profile, key hash, call
- *    totals, call stats, activity and sources move to the new handle (src/profile-move.ts).
+ *    totals, call stats, activity and sources move to the new handle (src/profile-move.ts), and its refresh marker is
+ *    reset so the cron picks it up first.
  *  - The handle's row belongs to a different github_id (that account renamed away and this login was reused): the
- *    old row is parked at an unpublished `~<github_id>` handle (`~<github_id>u` if it was already unpublished), so when its owner signs in under their new login the
- *    rename path above finds it by github_id and moves it over.
+ *    old row is parked at an unpublished `~<github_id>` handle (`~<github_id>u` if it was already unpublished),
+ *    so when its owner signs in under their new login the rename path above finds it by github_id and moves it over.
  *  - Otherwise a new profile is created and published in one INSERT.
+ * Activity is not fetched here: the callback has a 10 ms CPU budget (see /edit/refresh).
  */
-async function signIn(db: D1Database, d: Seed): Promise<SignInOutcome> {
+async function signIn(db: D1Database, d: Seed): Promise<boolean> {
   const [byId, byHandle] = await Promise.all([getProfileByGithubId(db, d.github_id), getProfile(db, d.handle)]);
-  if (byHandle && byHandle.github_id === d.github_id) return "existing";
+  if (byHandle && byHandle.github_id === d.github_id) return false;
 
   const stmts: D1PreparedStatement[] = [];
   if (byHandle) stmts.push(...moveHandleStatements(db, byHandle.handle, placeholderHandle(byHandle.github_id, byHandle.published), { unpublish: true }));
-  let outcome: SignInOutcome;
   if (byId) {
     // Coming home from a parking spot (the login had been taken): the profile goes live again, as it was before.
-    const home = byId.handle.startsWith("~") && wasPublishedBeforeParking(byId.handle);
-    stmts.push(...moveHandleStatements(db, byId.handle, d.handle, { publish: home }));
-    outcome = "renamed";
+    stmts.push(...moveHandleStatements(db, byId.handle, d.handle, { publish: byId.handle.startsWith("~") && wasPublishedBeforeParking(byId.handle), refetch: true }));
   } else {
     const f = sanitizeSeed(d);
+    // Leftovers under a reused handle (stats, activity, sources, card) must not be inherited by the new profile.
+    if (!byHandle) stmts.push(...clearHandleStatements(db, d.handle));
     stmts.push(
       db
         .prepare(
@@ -486,18 +497,16 @@ async function signIn(db: D1Database, d: Seed): Promise<SignInOutcome> {
         )
         .bind(d.handle, d.github_id, f.name, f.avatar_url, f.headline, f.location, f.bio, f.now, f.about, f.contact, JSON.stringify(f.links), JSON.stringify(f.projects)),
     );
-    outcome = "created";
   }
   try {
     await db.batch(stmts);
   } catch (e) {
     // Two sign-ins racing for the same identity: the batch rolled back whole. If the other one won, this one is done.
     const now = await getProfile(db, d.handle);
-    if (now && now.github_id === d.github_id) return "existing";
+    if (now && now.github_id === d.github_id) return false;
     throw e;
   }
-  // Nothing is fetched for a renamed profile that stays unpublished.
-  return outcome === "renamed" && !byId?.published && !byId?.handle.startsWith("~") ? "existing" : outcome;
+  return !byId;
 }
 
 function profileMarkdown(env: Env, p: Profile): string {

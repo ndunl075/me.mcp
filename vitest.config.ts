@@ -13,8 +13,6 @@ export default defineConfig(async () => {
             PUBLIC_URL: "http://localhost/me",
             SESSION_SECRET: "test-session-secret-0123456789abcdef",
             DEV_LOGIN: "1",
-            // No background activity fetch on sign-in (it would hit the real GitHub API); tests that cover it turn it on.
-            SIGNIN_REFRESH: "0",
             // Rate limits only enforce when this is set (src/security.ts); keep them on so the tests cover them.
             PROXY_SECRET: "test-proxy-secret",
             TEST_MIGRATIONS: migrations,

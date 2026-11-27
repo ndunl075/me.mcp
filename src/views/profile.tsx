@@ -109,6 +109,7 @@ export function ProfilePage({
   drawVersion = null,
   activity = [],
   sources,
+  fetchActivity = false,
 }: {
   ctx: Ctx;
   p: Profile;
@@ -123,6 +124,8 @@ export function ProfilePage({
   activity?: ActivityRow[];
   /** Passed only to the owner: their activity sources, for the on/off card. */
   sources?: SourceRow[];
+  /** Owner only: the activity was never fetched, so the page asks POST /edit/refresh for it and swaps it in. */
+  fetchActivity?: boolean;
 }) {
   const page = `${ctx.publicUrl}/${p.handle}`;
   const mcp = `${page}/mcp`;
@@ -249,18 +252,25 @@ export function ProfilePage({
               </div>
             )}
 
-            {activity.length > 0 && (
-              <div class="block">
-                <h2>Recent activity</h2>
-                <ActivityList items={activity} />
-              </div>
-            )}
-
-            {isOwner && sources && (
-              <div class="block">
-                <SourcesCard ctx={ctx} sources={sources} />
-              </div>
-            )}
+            {/* One container, so the fetch script can swap in fresh activity and sources without a reload (welcome bar stays). */}
+            <div id="activity-area">
+              {fetchActivity && (
+                <p class="fetching" id="fetching" role="status">
+                  Fetching your activity…
+                </p>
+              )}
+              {activity.length > 0 && (
+                <div class="block">
+                  <h2>Recent activity</h2>
+                  <ActivityList items={activity} />
+                </div>
+              )}
+              {isOwner && sources && (
+                <div class="block">
+                  <SourcesCard ctx={ctx} sources={sources} />
+                </div>
+              )}
+            </div>
 
             {p.about && (
               <div class="block">
@@ -371,6 +381,21 @@ export function ProfilePage({
           </aside>
         </div>
       </div>
+      {fetchActivity && (
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){var a=document.getElementById('activity-area');if(!a)return;" +
+              "var done=function(){var n=document.getElementById('fetching');if(n)n.remove()};" +
+              `fetch(${JSON.stringify(ctx.base + "/edit/refresh")},{method:'POST',credentials:'same-origin'})` +
+              ".then(function(r){return r.ok?r.json():null})" +
+              ".then(function(j){if(!j||!j.changed){done();return}" +
+              "return fetch(location.pathname+location.search,{credentials:'same-origin'}).then(function(r){return r.text()}).then(function(t){" +
+              "var d=new DOMParser().parseFromString(t,'text/html').getElementById('activity-area');if(d)a.innerHTML=d.innerHTML;else done()})})" +
+              ".catch(done)})();",
+          }}
+        />
+      )}
       {drawVersion && (
         <>
           <script
