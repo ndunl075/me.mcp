@@ -1,4 +1,6 @@
 import type { Profile, Stats } from "../db";
+import { isCleanUrl } from "../db";
+import { SOURCE_DISABLE_AFTER, type ActivityRow, type SourceRow } from "../activity";
 import { type Ctx, Layout, CopyIcon, XIcon } from "./layout";
 import { SHARE_CARD_JS, cardDataJson } from "./sharecard";
 
@@ -12,6 +14,91 @@ function ago(sqlite: string): string {
   return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+const SOURCE_NAMES: Record<string, string> = { github: "GitHub", blog: "Blog", bluesky: "Bluesky", mastodon: "Mastodon" };
+
+/** "today", "yesterday", "3d ago", "2w ago", then "Oct 4" / "Oct 4, 2025". Input is an ISO-8601 UTC timestamp. */
+export function relativeDay(iso: string, now = Date.now()): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const days = Math.floor((now - t) / 86400_000);
+  if (days < 1) return "today";
+  if (days < 2) return "yesterday";
+  if (days < 14) return `${days}d ago`;
+  if (days < 60) return `${Math.floor(days / 7)}w ago`;
+  const d = new Date(t);
+  const sameYear = d.getUTCFullYear() === new Date(now).getUTCFullYear();
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }), timeZone: "UTC" });
+}
+
+function ActivityList({ items }: { items: ActivityRow[] }) {
+  return (
+    <ul class="act">
+      {items.map((it) => (
+        <li>
+          <time datetime={it.ts} title={it.ts.replace("T", " ").replace("Z", " UTC")}>
+            {relativeDay(it.ts)}
+          </time>
+          <span class="src">{SOURCE_NAMES[it.source] ?? it.source}</span>
+          {/* Titles come from other sites: link only http(s) URLs, and nofollow them like every other user-supplied link. */}
+          {/^https?:\/\//i.test(it.url) && isCleanUrl(it.url) ? (
+            <a href={it.url} rel="nofollow noopener" target="_blank">
+              {it.title}
+            </a>
+          ) : (
+            <span>{it.title}</span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Owner-only: which of the sources found on their GitHub profile feed the activity list. A plain form, no JS needed. */
+function SourcesCard({ ctx, sources }: { ctx: Ctx; sources: SourceRow[] }) {
+  const toggles = sources.filter((s) => s.source !== "github");
+  const github = sources.find((s) => s.source === "github");
+  return (
+    <div class="card sources" id="sources">
+      <h2>Sources</h2>
+      <p class="hint">
+        Activity comes from what's listed on your GitHub profile: your public GitHub activity, plus your blog, Bluesky or Mastodon if you've added
+        them there.
+      </p>
+      <form method="post" action={`${ctx.base}/edit/sources`} data-autosubmit>
+        <div class="src-row static">
+          <span class="src-name">
+            GitHub <small>{github?.label || `@${ctx.session?.login ?? ""}`}</small>
+          </span>
+          <span class="src-state">Always on</span>
+        </div>
+        {toggles.map((s) => {
+          const broken = !s.enabled && s.failures >= SOURCE_DISABLE_AFTER;
+          return (
+            <label class="src-row">
+              <span class="src-name">
+                {SOURCE_NAMES[s.source] ?? s.source} {s.label && <small>{s.label}</small>}
+                {broken && <em>Turned off after repeated failures</em>}
+              </span>
+              <span class="switch">
+                <input type="checkbox" name="on" value={s.source} checked={s.enabled} aria-label={`Include ${SOURCE_NAMES[s.source] ?? s.source}`} />
+                <i aria-hidden="true"></i>
+              </span>
+            </label>
+          );
+        })}
+        {toggles.length === 0 && <p class="hint" style="margin:12px 0 0">No blog, Bluesky or Mastodon found on your GitHub profile yet.</p>}
+        {toggles.length > 0 && (
+          <div class="actions" style="margin-top:14px">
+            <button class="btn btn-sm btn-light" type="submit">
+              Save
+            </button>
+          </div>
+        )}
+      </form>
+    </div>
+  );
+}
+
 export function ProfilePage({
   ctx,
   p,
@@ -20,6 +107,9 @@ export function ProfilePage({
   welcome = false,
   cardVersion = null,
   drawVersion = null,
+  activity = [],
+  sources,
+  fetchActivity = false,
 }: {
   ctx: Ctx;
   p: Profile;
@@ -30,6 +120,12 @@ export function ProfilePage({
   cardVersion?: string | null;
   /** Set only when the owner's browser should draw and upload a card: the version it will be stamped with. */
   drawVersion?: string | null;
+  /** Newest first. The section is left out when empty. */
+  activity?: ActivityRow[];
+  /** Passed only to the owner: their activity sources, for the on/off card. */
+  sources?: SourceRow[];
+  /** Owner only: the activity was never fetched, so the page asks POST /edit/refresh for it and swaps it in. */
+  fetchActivity?: boolean;
 }) {
   const page = `${ctx.publicUrl}/${p.handle}`;
   const mcp = `${page}/mcp`;
@@ -156,6 +252,26 @@ export function ProfilePage({
               </div>
             )}
 
+            {/* One container, so the fetch script can swap in fresh activity and sources without a reload (welcome bar stays). */}
+            <div id="activity-area">
+              {fetchActivity && (
+                <p class="fetching" id="fetching" role="status">
+                  Fetching your activity…
+                </p>
+              )}
+              {activity.length > 0 && (
+                <div class="block">
+                  <h2>Recent activity</h2>
+                  <ActivityList items={activity} />
+                </div>
+              )}
+              {isOwner && sources && (
+                <div class="block">
+                  <SourcesCard ctx={ctx} sources={sources} />
+                </div>
+              )}
+            </div>
+
             {p.about && (
               <div class="block">
                 <h2>About</h2>
@@ -265,6 +381,22 @@ export function ProfilePage({
           </aside>
         </div>
       </div>
+      {fetchActivity && (
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){var a=document.getElementById('activity-area');if(!a)return;" +
+              "var done=function(){var n=document.getElementById('fetching');if(n)n.remove()};" +
+              "var ac=new AbortController(),tm=setTimeout(function(){ac.abort()},10000);" +
+              `fetch(${JSON.stringify(ctx.base + "/edit/refresh")},{method:'POST',credentials:'same-origin',signal:ac.signal})` +
+              ".then(function(r){return r.ok?r.json():null})" +
+              ".then(function(j){if(!j||!j.changed){done();return}" +
+              "return fetch(location.pathname+location.search,{credentials:'same-origin',signal:ac.signal}).then(function(r){return r.text()}).then(function(t){" +
+              "var d=new DOMParser().parseFromString(t,'text/html').getElementById('activity-area');if(d)a.innerHTML=d.innerHTML;else done()})})" +
+              ".catch(done).then(function(){clearTimeout(tm)})})();",
+          }}
+        />
+      )}
       {drawVersion && (
         <>
           <script

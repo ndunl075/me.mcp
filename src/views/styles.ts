@@ -224,6 +224,31 @@ a.proj:hover{border-color:#d6d6d6}
 .links{display:flex;flex-wrap:wrap;gap:8px}
 .links a{border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:14px}
 .links a:hover{background:var(--soft)}
+.fetching{margin:28px 0 0;font-size:14px;color:var(--muted)}
+.fetching::before{content:"";display:inline-block;width:10px;height:10px;margin-right:8px;border:2px solid var(--line);border-top-color:var(--ink);border-radius:50%;vertical-align:-1px;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.act{list-style:none;margin:0;padding:0}
+.act li{display:flex;gap:12px;align-items:baseline;padding:9px 0;border-top:1px solid var(--line-2);font-size:15px;color:var(--ink-2);min-width:0}
+.act li:first-child{border-top:0;padding-top:0}
+.act time{flex:none;width:78px;color:var(--faint);font-size:13px;font-variant-numeric:tabular-nums}
+.act .src{flex:none;min-width:72px;text-align:center;font-size:11.5px;font-weight:600;letter-spacing:.03em;color:var(--muted);background:var(--soft);border-radius:6px;padding:2px 8px}
+.act a,.act li>span:last-child{min-width:0;overflow-wrap:anywhere}
+.act a:hover{text-decoration:underline}
+@media (max-width:560px){.act li{flex-wrap:wrap;row-gap:4px;align-items:center}.act time{width:auto;min-width:64px}.act a,.act li>span:last-child{flex-basis:100%}}
+.sources{padding:18px 20px;background:var(--soft-2)}
+.sources .hint{margin-bottom:10px;font-size:14px}
+.src-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line-2);font-size:15px;cursor:pointer}
+.src-row.static{cursor:default}
+.src-name small{color:var(--muted);font-size:13px;margin-left:6px}
+.src-name em{display:block;font-style:normal;font-size:13px;color:#b45309;margin-top:2px}
+.src-state{font-size:13px;color:var(--muted)}
+.switch{position:relative;flex:none;width:38px;height:22px}
+.switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.switch i{display:block;width:100%;height:100%;border-radius:999px;background:#d4d4d4;transition:background .15s;pointer-events:none}
+.switch i::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+.switch input:checked + i{background:var(--ink)}
+.switch input:checked + i::after{transform:translateX(16px)}
+.switch input:focus-visible + i{outline:2px solid var(--ink);outline-offset:2px}
 .install{position:sticky;top:90px}
 .install .endpoint{display:flex;gap:8px;align-items:center;background:var(--soft);border-radius:10px;padding:6px 6px 6px 12px;margin:12px 0 4px}
 .install .endpoint code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
@@ -333,5 +358,5 @@ a.proj:hover{border-color:#d6d6d6}
 .ui-url .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ui-stat{font-size:13px;color:var(--muted)}
 .ui-stat b{font-family:var(--display);font-weight:400;font-size:18px;color:var(--ink)}
-@media (prefers-reduced-motion:reduce){.flow-wire i,.srv-live i,.chip-term .cur{animation:none}.toolcall,.msg-ai{animation:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.fetching::before{animation:none}.flow-wire i,.srv-live i,.chip-term .cur{animation:none}.toolcall,.msg-ai{animation:none;opacity:1}}
 `;

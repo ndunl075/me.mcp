@@ -130,7 +130,7 @@ export async function fetchGithubStarter(
 ): Promise<{ user: GithubUser; links: Link[]; projects: Project[]; recent: { name: string; description: string } | null }> {
   const user = await gh<GithubUser>("/user", token);
   const repos = await gh<{ name: string; html_url: string; homepage: string | null; description: string | null; fork: boolean; stargazers_count: number }[]>(
-    `/users/${user.login}/repos?per_page=100&sort=pushed`,
+    `/users/${user.login}/repos?per_page=30&sort=pushed`,
     token,
   ).catch(() => []);
 
