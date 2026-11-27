@@ -49,10 +49,10 @@ code,pre,kbd{font-family:var(--mono);font-size:.875em}
 .btn-light:hover{background:var(--soft-2)}
 .btn-ghost{background:transparent}
 .btn-ghost:hover{background:var(--soft)}
-.btn-lg{height:60px;padding:0 30px;font-size:20px;border-radius:14px;font-family:var(--display);font-weight:400;letter-spacing:-.01em}
+.btn-lg{height:52px;padding:0 26px;font-size:18px;border-radius:13px;font-family:var(--display);font-weight:400;letter-spacing:-.01em}
 .btn-sm{height:32px;padding:0 12px;font-size:13px;border-radius:8px}
 .btn svg{flex:none}
-@media (max-width:560px){.btn-lg{height:54px;font-size:18px;width:100%}}
+@media (max-width:560px){.btn-lg{height:52px;font-size:18px;width:100%}}
 
 /* ---------- hero ---------- */
 .hero{padding-top:96px;padding-bottom:40px;text-align:center}
@@ -257,8 +257,9 @@ a.proj:hover{border-color:#d6d6d6}
 /* hero chip: real avatars + cycling handle */
 .chip-avatars img{width:.46em;height:.46em;border-radius:50%;box-shadow:0 0 0 .035em #fff;margin-left:-.14em;display:block;object-fit:cover;background:var(--soft)}
 .chip-avatars img:first-child,.chip-avatars i:first-child{margin-left:0}
-.chip-avatars .at{display:inline-block;text-align:left;transition:opacity .25s ease,transform .25s ease}
-.chip-avatars .at.out{opacity:0;transform:translateY(.25em)}
+.chip-avatars .at{display:inline-block;text-align:left;white-space:nowrap}
+.chip-avatars .at .caret{display:inline-block;width:.09em;height:1em;background:var(--ink-2);vertical-align:-.15em;margin-left:.04em;animation:blink 1s steps(1) infinite}
+.chip-avatars .at.typing .caret{animation:none}
 
 /* visual 1: flow */
 .flow{display:grid;grid-template-columns:1fr 72px 1fr 72px 1fr;align-items:start}
