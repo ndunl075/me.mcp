@@ -57,13 +57,15 @@ export function EditorPage({
   return (
     <Layout ctx={ctx} title="Edit your server — me.mcp" description="Edit your me.mcp profile.">
       <div class="narrow page">
-        <h1 class="display">{first ? "Create your MCP server" : "Edit your server"}</h1>
+        <h1 class="display">{p.published ? "Make it better" : first ? "Create your MCP server" : "Edit your server"}</h1>
         <p class="lede">
-          You'll be live at{" "}
+          {p.published ? "You're live at " : "You'll be live at "}
           <a href={`${b}/${p.handle}`} style="text-decoration:underline">
             {ctx.publicUrl.replace(/^https?:\/\//, "")}/{p.handle}
           </a>
-          . Everything here is public once you publish.
+          {p.published
+            ? ". Everything is optional: add a headline, what you're up to now, and more, so agents can answer better."
+            : ". Everything here is public once you publish."}
         </p>
 
         <div style="height:28px"></div>
@@ -92,7 +94,7 @@ export function EditorPage({
           </div>
         )}
 
-        <details class="card ai" open={first}>
+        <details class="card ai" open={first || (p.published && !p.about)}>
           <summary>
             <h2>✨ Draft it with your AI</h2>
             <p class="hint" style="margin:0">
