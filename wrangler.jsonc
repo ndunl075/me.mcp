@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "me-mcp",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    // Public URL the app is served at (no trailing slash). Its path becomes the base path.
+    // e.g. "https://www.usefrontierdigital.com/me" or "https://me-mcp.<you>.workers.dev/me"
+    "PUBLIC_URL": "https://www.usefrontierdigital.com/me",
+    "GITHUB_REPO_URL": "https://github.com/ndunl075/me.mcp"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "me-mcp",
+      // Replace with the id printed by `npx wrangler d1 create me-mcp`
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+  // Secrets (set with `npx wrangler secret put NAME`):
+  //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, SESSION_SECRET
+}

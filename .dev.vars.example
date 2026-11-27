@@ -1,0 +1,7 @@
+# Copy to .dev.vars for local development.
+PUBLIC_URL=http://localhost:8787/me
+SESSION_SECRET=change-me-to-a-long-random-string
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+# Local only: enables /me/auth/dev?login=<name> so you can test without GitHub OAuth.
+DEV_LOGIN=1

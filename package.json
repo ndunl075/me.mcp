@@ -1,0 +1,25 @@
+{
+  "name": "me.mcp",
+  "version": "0.1.0",
+  "description": "Turn yourself into an MCP server. Free, open source, zero-cost to host.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "hono": "4.13.23",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261127.1",
+    "typescript": "7.0.2",
+    "wrangler": "4.168.0"
+  }
+}
