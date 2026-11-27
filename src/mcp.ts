@@ -71,8 +71,15 @@ export const PROFILE_ACTIVITY = 5;
 
 const one = (s: string) => cleanLine(s);
 
-/** Long runs of blanks inside a line carry no meaning for a reader and cost tokens: collapse them. */
-const squeeze = (s: string) => s.replace(/[ \t]{8,}/g, " ");
+/** Blank runs up to this long are kept as written (indentation, aligned text); longer ones are padding. */
+const MAX_BLANK_RUN = 32;
+/**
+ * Runs of more than MAX_BLANK_RUN blanks carry no meaning for a reader and cost tokens: collapse them to one space.
+ * Shorter runs, including a line's leading indentation, are left alone. Linear: a run is matched from its first blank
+ * (the lookbehind stops it restarting inside the run) and costs at most MAX_BLANK_RUN extra steps when it turns out short.
+ */
+const BLANK_PADDING = new RegExp(`(?<![ \\t])[ \\t]{${MAX_BLANK_RUN + 1},}`, "g");
+const squeeze = (s: string) => s.replace(BLANK_PADDING, " ");
 
 /** "Header: first line" plus the rest of a multi-line field, indented so no line of it starts at column 0. */
 function field(header: string, body: string): string {
@@ -278,7 +285,7 @@ function networkServer(env: Env, trackFor: (handle: string) => void): McpServer 
     "lookup_person",
     { description: "Complete profile of a person on me.mcp: bio, now, projects, recent activity, links, contact.", inputSchema: lookupInput, annotations: ro },
     async ({ handle }) => {
-      const h = handle.replace(/^@/, "").trim().toLowerCase();
+      const h = handle.trim().replace(/^@/, "").trim().toLowerCase();
       const p = await getPublishedProfile(env.DB, h);
       if (!p) return text(`No me.mcp profile for @${cleanLine(h).slice(0, 60)}. Try search_people.`);
       trackFor(p.handle);

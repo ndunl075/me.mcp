@@ -137,6 +137,68 @@ describe("refreshProfileActivity", () => {
     expect((await listActivity(env.DB, "zoe")).some((x) => x.source === "blog")).toBe(true);
   });
 
+  it("a disabled source GitHub stops listing keeps its off switch (hidden tombstone); relisting does not re-enable it", async () => {
+    await makeProfile("tomb", 9400);
+    const social = (providers: { provider: string; url: string }[]) =>
+      zoeFetch({
+        "https://api.github.com/users/tomb/events": () => json([]),
+        "https://api.github.com/users/tomb/social": () => json(providers),
+        "https://api.github.com/users/tomb": () => json({ blog: "" }),
+      }).fn;
+    const bsky = [{ provider: "bluesky", url: "https://bsky.app/profile/tomb.example.com" }];
+    const raw = () => env.DB.prepare("SELECT enabled, failures FROM sources WHERE handle = 'tomb' AND source = 'bluesky'").first<{ enabled: number; failures: number }>();
+
+    await refreshProfileActivity(env, "tomb", { fetch: social(bsky), now: NOW });
+    expect((await listSources(env.DB, "tomb")).find((s) => s.source === "bluesky")?.enabled).toBe(true);
+    await setSourceEnabled(env.DB, "tomb", "bluesky", false);
+
+    // GitHub stops listing it: hidden from the owner's list, but the off switch is still stored.
+    await refreshProfileActivity(env, "tomb", { fetch: social([]), now: NOW + 1 });
+    expect((await listSources(env.DB, "tomb")).some((s) => s.source === "bluesky")).toBe(false);
+    expect(await raw()).toEqual({ enabled: 0, failures: -1 });
+    const again = await refreshProfileActivity(env, "tomb", { fetch: social([]), now: NOW + 2 });
+    expect(again.sourceRows).toBe(0); // nothing to rewrite while it stays unlisted
+
+    // Listed again: still off, not fetched, and shown (off) again with a clean failure count.
+    const f = zoeFetch({
+      "https://api.github.com/users/tomb/events": () => json([]),
+      "https://api.github.com/users/tomb/social": () => json(bsky),
+      "https://api.github.com/users/tomb": () => json({ blog: "" }),
+    });
+    await refreshProfileActivity(env, "tomb", { fetch: f.fn, now: NOW + 3 });
+    expect(f.calls.some((c) => c.url.includes("bsky"))).toBe(false);
+    expect((await listSources(env.DB, "tomb")).find((s) => s.source === "bluesky")).toMatchObject({ enabled: false, failures: 0 });
+    expect((await listActivity(env.DB, "tomb")).some((x) => x.source === "bluesky")).toBe(false);
+
+    // Unlisted again; the owner API cannot un-hide or re-enable a tombstone.
+    await refreshProfileActivity(env, "tomb", { fetch: social([]), now: NOW + 4 });
+    await setSourceEnabled(env.DB, "tomb", "bluesky", true);
+    expect(await raw()).toEqual({ enabled: 0, failures: -1 });
+    expect((await listSources(env.DB, "tomb")).some((s) => s.source === "bluesky")).toBe(false);
+
+    // Listed and enabled by the owner, then dropped by GitHub: an enabled source is simply deleted (nothing to preserve).
+    await refreshProfileActivity(env, "tomb", { fetch: social(bsky), now: NOW + 5 });
+    await setSourceEnabled(env.DB, "tomb", "bluesky", true);
+    expect((await listSources(env.DB, "tomb")).find((s) => s.source === "bluesky")?.enabled).toBe(true);
+    await refreshProfileActivity(env, "tomb", { fetch: social([]), now: NOW + 6 });
+    expect(await raw()).toBeNull();
+  });
+
+  it("an auto-disabled source that GitHub drops and re-lists stays disabled", async () => {
+    await makeProfile("tomb2", 9401);
+    const mk = (listed: boolean) => zoeFetch({
+      "https://api.github.com/users/tomb2/events": () => json([]),
+      "https://api.github.com/users/tomb2/social": () => json(listed ? [{ provider: "bluesky", url: "https://bsky.app/profile/tomb2.example.com" }] : []),
+      "https://api.github.com/users/tomb2": () => json({ blog: "" }),
+      "https://public.api.bsky.app/": () => new Response("down", { status: 500 }),
+    }).fn;
+    for (let i = 1; i <= SOURCE_DISABLE_AFTER; i++) await refreshProfileActivity(env, "tomb2", { fetch: mk(true), now: NOW + i });
+    expect((await listSources(env.DB, "tomb2")).find((s) => s.source === "bluesky")?.enabled).toBe(false);
+    await refreshProfileActivity(env, "tomb2", { fetch: mk(false), now: NOW + 50 });
+    await refreshProfileActivity(env, "tomb2", { fetch: mk(true), now: NOW + 51 });
+    expect((await listSources(env.DB, "tomb2")).find((s) => s.source === "bluesky")).toMatchObject({ enabled: false, failures: 0 });
+  });
+
   it("sends the OAuth app's Basic credentials to GitHub only", async () => {
     const f = zoeFetch();
     await refreshProfileActivity({ ...env, GITHUB_CLIENT_ID: "cid", GITHUB_CLIENT_SECRET: "csecret" }, "zoe", { fetch: f.fn, now: NOW });

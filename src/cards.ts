@@ -88,15 +88,17 @@ function toBase64(b: Uint8Array): string {
 /**
  * Stores the card for a published profile (one row per handle). Returns false, writing nothing, if the profile is gone or
  * unpublished: the insert is selected from `profiles`, so it can't race a delete (and the FK would refuse an orphan anyway).
+ * When `githubId` is given, the profile row must also belong to that GitHub account (a handle can be deleted and claimed
+ * by someone else between a session being issued and this write). Omitted, no ownership check is made.
  */
-export async function saveCard(db: D1Database, handle: string, png: Uint8Array, version: string): Promise<boolean> {
+export async function saveCard(db: D1Database, handle: string, png: Uint8Array, version: string, githubId?: number): Promise<boolean> {
   const res = await db
     .prepare(
       `INSERT INTO share_cards (handle, png_b64, version)
-       SELECT handle, ?, ? FROM profiles WHERE handle = ? AND published = 1
+       SELECT handle, ?, ? FROM profiles WHERE handle = ? AND published = 1 AND (? IS NULL OR github_id = ?)
        ON CONFLICT (handle) DO UPDATE SET png_b64 = excluded.png_b64, version = excluded.version, updated_at = datetime('now')`,
     )
-    .bind(toBase64(png), version, handle)
+    .bind(toBase64(png), version, handle, githubId ?? null, githubId ?? null)
     .run();
   return res.meta.changes > 0;
 }
@@ -114,7 +116,6 @@ const BRAND_CACHE = "public, max-age=3600";
 // edge honours for an external rewrite). Anything else (no ?v, an old or guessed one) is short-lived so it can't pin a stale image.
 const IMMUTABLE = { "Cache-Control": "public, max-age=31536000, immutable", "CDN-Cache-Control": "max-age=31536000" };
 const SHORT = { "Cache-Control": "public, max-age=300" };
-const BRAND_ETAG = '"brand-1"';
 
 const pngResponse = (body: BodyInit | null, etag: string, cache: Record<string, string>, status = 200) =>
   new Response(body, { status, headers: { "Content-Type": "image/png", ETag: etag, ...cache } });
@@ -129,9 +130,25 @@ function brand(): Uint8Array<ArrayBuffer> {
   return (brandPng ??= fromBase64(DEFAULT_CARD_B64)); // decoded once per isolate
 }
 
+/** FNV-1a (two 32-bit lanes with different seeds) over the bytes, as 16 hex chars. Not cryptographic: it only has to change when the image does. */
+function fingerprint(b: Uint8Array): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < b.length; i++) {
+    h1 = Math.imul(h1 ^ b[i], 0x01000193);
+    h2 = Math.imul(h2 ^ b[i], 0x85ebca6b);
+  }
+  return (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
+}
+
+/** ETag of the brand card: derived from its bytes, so replacing the image (views/defaultcard.ts) invalidates caches without a manual bump. Computed once per isolate. */
+let brandEtag: string | undefined;
+const BRAND_ETAG = (): string => (brandEtag ??= `"brand-${fingerprint(brand())}"`);
+
 /** The brand card: landing page og:image, and the stand-in for profiles whose owner hasn't generated a card yet. */
 export function defaultCardResponse(req: Request, cache: Record<string, string> = { "Cache-Control": BRAND_CACHE }): Response {
-  return matches(req, BRAND_ETAG) ? pngResponse(null, BRAND_ETAG, cache, 304) : pngResponse(brand(), BRAND_ETAG, cache);
+  const etag = BRAND_ETAG();
+  return matches(req, etag) ? pngResponse(null, etag, cache, 304) : pngResponse(brand(), etag, cache);
 }
 
 /**
