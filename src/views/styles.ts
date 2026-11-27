@@ -245,7 +245,8 @@ a.proj:hover{border-color:#d6d6d6}
 .bar .track{background:var(--line-2);border-radius:3px}
 .owner-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--soft);border-radius:12px;padding:10px 12px;margin-bottom:24px;font-size:14px}
 .owner-bar .sp{flex:1}
-.owner-bar.welcome{flex-direction:column;align-items:stretch;gap:12px;padding:16px;background:var(--soft)}
+.owner-bar.welcome{flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:12px;padding:16px;background:var(--soft)}
+.owner-bar.welcome>*{min-width:0;max-width:100%}
 .owner-bar .wl-head{font-size:15px}
 .owner-bar .wl-url{display:flex;gap:8px;align-items:center;background:#fff;border-radius:10px;padding:6px 6px 6px 12px}
 .owner-bar .wl-url code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
