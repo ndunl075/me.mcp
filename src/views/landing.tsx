@@ -3,16 +3,34 @@ import { type Ctx, Layout, GithubIcon, CopyIcon, XIcon } from "./layout";
 
 const GRADS = ["grad-1", "grad-2", "grad-3"];
 
+// Shown only while nobody has published, so the headline still types and the photos still show.
+// These are examples in the chip, not accounts.
+const DEMO_CHIP: { handle: string; avatar_url: string }[] = [
+  { handle: "torvalds", avatar_url: "https://github.com/torvalds.png" },
+  { handle: "gaearon", avatar_url: "https://github.com/gaearon.png" },
+  { handle: "ada", avatar_url: "https://github.com/ada.png" },
+];
+
+export function heroChip(fresh: { handle: string; avatar_url: string }[], me?: string) {
+  if (me) return { handles: [`@${me}`], faces: [`https://github.com/${me}.png?size=96`] as (string | null)[] };
+  const recent = fresh.slice(0, 3);
+  const people = recent.length ? recent : DEMO_CHIP;
+  return {
+    handles: ["@you", ...people.filter((p) => p.handle.length <= 12).map((p) => `@${p.handle}`)],
+    faces: [0, 1, 2].map((i) => people[i]?.avatar_url ?? null),
+  };
+}
+
 export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh: LeaderRow[] }) {
   const b = ctx.base;
   const host = ctx.publicUrl.replace(/^https?:\/\//, "");
   const start = ctx.session ? `${b}/edit` : `${b}/auth/github`;
   const example = top[0]?.handle ?? fresh[0]?.handle;
 
-  // Hero chip: signed in → your own avatar + handle. Otherwise → real people who just joined, cycling.
+  // Signed in → your own avatar + handle. Otherwise → people who just published, or the examples above.
   const me = ctx.session?.login;
-  const recent = fresh.slice(0, 3);
-  const chipHandles = me ? [`@${me}`] : ["@you", ...recent.filter((p) => p.handle.length <= 12).map((p) => `@${p.handle}`)];
+  const chip = heroChip(fresh, me);
+  const chipHandles = chip.handles;
 
   return (
     <Layout
@@ -29,13 +47,7 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
           <span class="row">
             <span>Turn</span>
             <span class="chip chip-avatars" aria-hidden="true">
-              {me ? (
-                <img src={`https://github.com/${me}.png?size=96`} alt="" />
-              ) : (
-                [0, 1, 2].map((i) =>
-                  recent[i] ? <img src={recent[i].avatar_url} alt="" /> : <i class={GRADS[i]}></i>,
-                )
-              )}
+              {chip.faces.map((src, i) => (src ? <img src={src} alt="" /> : <i class={GRADS[i]}></i>))}
               <span class="at" data-cycle={JSON.stringify(chipHandles)}>
                 {chipHandles[0]}
               </span>

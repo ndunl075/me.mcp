@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { call, form, publish, signIn, unpublish } from "./helpers";
+import { heroChip } from "../src/views/landing";
 
 let cookie: string;
 
@@ -123,6 +124,21 @@ describe("llms.txt", () => {
 describe("misc", () => {
   it("the landing page renders", async () => {
     expect((await call("/me")).status).toBe(200);
+  });
+
+  it("an empty hero still types through example handles and shows their photos", () => {
+    const empty = heroChip([]);
+    expect(empty.handles).toEqual(["@you", "@torvalds", "@gaearon", "@ada"]);
+    expect(empty.faces).toEqual([
+      "https://github.com/torvalds.png",
+      "https://github.com/gaearon.png",
+      "https://github.com/ada.png",
+    ]);
+    const live = heroChip([{ handle: "gina", avatar_url: "https://github.com/gina.png" }]);
+    expect(live.handles).toEqual(["@you", "@gina"]);
+    expect(live.faces[0]).toBe("https://github.com/gina.png");
+    expect(live.faces[1]).toBeNull();
+    expect(heroChip([], "nico").handles).toEqual(["@nico"]);
   });
 
   it("a tampered session cookie is ignored", async () => {
