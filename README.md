@@ -17,8 +17,8 @@ Replace the URL with any profile, or use the network server (`https://www.usefro
 
 | Client | How |
 | --- | --- |
-| Claude | Settings → Connectors → Add custom connector → paste the URL |
-| ChatGPT | Settings → Apps & Connectors → create a connector (developer mode) → paste the URL |
+| Claude | Add a custom connector in Settings and paste the URL |
+| ChatGPT | Add a custom connector / MCP server (developer mode) and paste the URL |
 | Cursor | "Add to Cursor" button on the profile page, or `.cursor/mcp.json`: `{ "mcpServers": { "me-<handle>": { "url": "<url>" } } }` |
 | Claude Code | `claude mcp add --transport http me-<handle> <url>` |
 
@@ -70,7 +70,7 @@ Profile text is written by one person and read by other people's AI agents, so i
 - Length caps on every field; invisible and bidi control characters stripped.
 - Only http(s) URLs are accepted.
 - Injection-resistant formatting: every line of a multi-line field is indented, so profile text cannot fake a section header, an activity item or the label.
-- Rate limits: MCP 60/min per IP, sign-in and editor writes 20/min per IP (Workers Rate Limiting binding). Enforced only when `PROXY_SECRET` is set; see below for why.
+- Rate limits: MCP 60/min per IP, sign-in and editor writes 20/min per IP (Workers Rate Limiting binding; per Cloudflare location and approximate, meant for abuse control). Enforced only when `PROXY_SECRET` is set; see below for why.
 - Strict Content-Security-Policy and `nosniff` on pages, set by the Worker so they survive a proxy.
 - Request bodies are capped at 64 KB and JSON-RPC batches at 5 messages.
 
@@ -87,12 +87,12 @@ Everything runs on Cloudflare's free plan; over the limit, requests are rejected
 
 ## Self-host
 
-You need a Cloudflare account (free), Node 20+, and a GitHub account.
+You need a Cloudflare account (free), Node 22.12+ (CI uses 24), and a GitHub account.
 
 1. `git clone https://github.com/ndunl075/me.mcp && cd me.mcp && npm install`
 2. `npx wrangler login`
-3. `npx wrangler d1 create me-mcp`, then paste the `database_id` into `wrangler.jsonc`.
-4. Set `PUBLIC_URL` in `wrangler.jsonc` to where it will be served, e.g. `https://me-mcp.<you>.workers.dev/me` or `https://www.example.com/me`. Its path becomes the base path.
+3. `npx wrangler d1 create me-mcp`, then replace `database_id` in `wrangler.jsonc` (the file holds the hosted instance's id).
+4. Set `PUBLIC_URL` in `wrangler.jsonc` to where it will be served, e.g. `https://me-mcp.<you>.workers.dev/me` or `https://www.example.com/me`. Its path becomes the base path. Also set `GITHUB_REPO_URL` to your fork, and give the `ratelimits` entries `namespace_id` values unique in your Cloudflare account.
 5. `npm run db:migrate:remote` applies migrations `0001` to `0003`.
 6. Create a GitHub OAuth app (Settings → Developer settings → OAuth Apps) with callback URL `<PUBLIC_URL>/auth/callback`. No scopes are requested.
 7. Set secrets:
@@ -113,15 +113,18 @@ To get `example.com/me` from a site on Vercel, proxy that path to the Worker in 
 {
   "routes": [
     {
-      "src": "/me(?:/(.*))?",
-      "dest": "https://me-mcp.<your-subdomain>.workers.dev/me/$1",
+      "src": "^(/me(?:/.*)?)$",
+      "dest": "https://<your-worker>.workers.dev$1",
+      "headers": {
+        "x-vercel-enable-rewrite-caching": "1"
+      },
       "transforms": [
         {
           "type": "request.headers",
           "op": "set",
           "target": { "key": "x-origin-secret" },
-          "args": "$ORIGIN_SECRET",
-          "env": ["ORIGIN_SECRET"]
+          "args": "$PROXY_SECRET",
+          "env": ["PROXY_SECRET"]
         }
       ]
     }
@@ -129,15 +132,15 @@ To get `example.com/me` from a site on Vercel, proxy that path to the Worker in 
 }
 ```
 
-Projects created before 2026-04-06 also need `x-vercel-enable-rewrite-caching: 1`. See [Vercel: restricting your origin to Vercel traffic](https://vercel.com/docs/rewrites#restricting-your-origin-to-vercel-traffic).
+The route-level `x-vercel-enable-rewrite-caching` header is needed for projects created before 2026-04-06. See [Vercel: restricting your origin to Vercel traffic](https://vercel.com/docs/rewrites#restricting-your-origin-to-vercel-traffic).
 
 **Order matters.** Without a matching header the Worker keys requests by `CF-Connecting-IP`, which behind Vercel is a shared egress address, so one abuser could lock everyone out. That is why limits are off until the secret is set:
 
 1. Generate a value: `openssl rand -hex 32`.
-2. Add it on Vercel as the environment variable `ORIGIN_SECRET` (this is the `PROXY_SECRET` value) and deploy the site.
+2. Add it on Vercel as the environment variable `PROXY_SECRET` and deploy the site.
 3. Only then set it on the Worker: `npx wrangler secret put PROXY_SECRET`.
 
-On a Cloudflare-hosted domain, use a Worker route (`example.com/me*`) instead and skip `PROXY_SECRET`.
+On a Cloudflare-hosted domain, use a Worker route (`example.com/me*`) instead. Still set `PROXY_SECRET` to a random value: without it **all rate limiting is off**, and with it direct requests are keyed by `CF-Connecting-IP`.
 
 ## Develop
 

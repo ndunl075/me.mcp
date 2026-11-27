@@ -6,7 +6,7 @@ Hard constraints:
 - **Zero running cost.** Everything must fit Cloudflare's free tier (Workers: 10 ms CPU/request, 100k req/day; D1: 5M reads, 100k writes/day). Never add server-side LLM calls or paid APIs.
 - **Profile text is untrusted.** It is shown to other people's AI agents. Keep length caps, http(s)-only URLs, and the self-published-data label on every MCP response. Multi-line profile fields are indented in tool output so they cannot fake headers or the label; keep that when adding output.
 - Base path comes from `PUBLIC_URL` (default `/me`). Build links with `url(env, path)` / `ctx.base`, never hardcode `/me`.
-- MCP answers are compact text, not JSON, to stay token-efficient. Keep tool descriptions to one sentence.
+- MCP answers are compact text, not JSON, to stay token-efficient. Keep tool descriptions short (1-2 sentences).
 
 Layout:
 - `src/worker.ts`: entry; request-wide concerns (security headers, rate limits) and the `scheduled` cron handler.
