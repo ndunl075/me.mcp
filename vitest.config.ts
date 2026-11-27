@@ -1,6 +1,6 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
-import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 
 export default defineConfig(async () => {
   const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
@@ -9,8 +9,6 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
-          // The pool bundles an older workerd than wrangler.jsonc targets; clamp the date it accepts.
-          compatibilityDate: "2026-08-01",
           bindings: {
             PUBLIC_URL: "http://localhost/me",
             SESSION_SECRET: "test-session-secret-0123456789abcdef",

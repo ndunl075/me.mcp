@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { publish, signIn, tool, call } from "./helpers";
+import { publish, rpc, signIn, tool, call } from "./helpers";
 
 const calls = (handle: string) =>
   env.DB.prepare("SELECT calls_total FROM profiles WHERE handle = ?").bind(handle).first<{ calls_total: number }>().then((r) => r?.calls_total);
@@ -20,9 +20,9 @@ describe("stats", () => {
     await tool("/me/frank/mcp", "get_about", {}, { "User-Agent": "Cursor/0.5" });
     expect(await calls("frank")).toBe(3);
 
-    const day = new Date().toISOString().slice(0, 10);
-    const daily = await env.DB.prepare("SELECT count FROM call_daily WHERE handle = ? AND day = ?").bind("frank", day).first<{ count: number }>();
-    expect(daily?.count).toBe(3);
+    // Sum across days so a UTC-midnight rollover mid-test can't flake this.
+    const daily = await env.DB.prepare("SELECT SUM(count) AS n FROM call_daily WHERE handle = ?").bind("frank").first<{ n: number }>();
+    expect(daily?.n).toBe(3);
 
     const { results } = await env.DB.prepare("SELECT client, count FROM call_clients WHERE handle = ? ORDER BY client").bind("frank").all();
     expect(results).toEqual([
@@ -33,7 +33,7 @@ describe("stats", () => {
 
   it("initialize and tools/list are not counted", async () => {
     const before = await calls("frank");
-    const { rpc } = await import("./helpers");
+    await rpc("/me/frank/mcp", "initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } });
     await rpc("/me/frank/mcp", "tools/list");
     expect(await calls("frank")).toBe(before);
   });
@@ -44,8 +44,12 @@ describe("stats", () => {
     expect(await calls("frank")).toBe(before + 1);
   });
 
-  it("calls show on the profile page", async () => {
+  it("the call count appears on the profile page", async () => {
+    const n = (await calls("frank"))!;
+    expect(n).toBeGreaterThan(0);
     const html = await (await call("/me/frank")).text();
     expect(html).toContain("Frank");
+    // The stats block renders the total as text; match it between tags to avoid incidental digits.
+    expect(html).toMatch(new RegExp(`>\\s*${n}\\s*<`));
   });
 });

@@ -1,13 +1,16 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { call, publish, rpc, signIn, tool, NOTE_PREFIX } from "./helpers";
+import { call, publish, rpc, signIn, tool, unpublish, NOTE_PREFIX } from "./helpers";
 
 const PATH = "/me/mcp";
 
 beforeAll(async () => {
   const cookie = await signIn("Carol");
   await publish(cookie, { name: "Carol Netter", headline: "Distributed systems hacker", now: "Building a gossip protocol" });
-  // A draft that must never show up.
-  await signIn("hiddenhank");
+  // An explicitly unpublished profile that must never show up.
+  const hank = await signIn("hiddenhank");
+  await publish(hank, { name: "Hidden Hank", headline: "secretword" });
+  await unpublish(hank);
+  expect((await call("/me/hiddenhank")).status).toBe(404);
 });
 
 describe("network MCP", () => {
@@ -39,7 +42,7 @@ describe("network MCP", () => {
     const t = await tool(PATH, "search_people", { query: "gossip" });
     expect(t.json.people.map((p: { handle: string }) => p.handle)).toEqual(["carol"]);
     expect(t.json.people[0].profile_url).toBe("http://localhost/me/carol");
-    const none = await tool(PATH, "search_people", { query: "hiddenhank" });
+    const none = await tool(PATH, "search_people", { query: "secretword" });
     expect(none.json.people).toEqual([]);
   });
 

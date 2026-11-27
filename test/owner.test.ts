@@ -45,6 +45,14 @@ describe("owner key", () => {
     expect(r.body.result.tools.map((t: { name: string }) => t.name)).not.toContain("update_profile");
   });
 
+  it("update_profile cannot be called without the key or with a wrong one", async () => {
+    for (const headers of [{}, auth("memcp_wrong")]) {
+      const t = await tool(PATH, "update_profile", { now: "hacked" }, headers);
+      expect(t.isError || t.result === undefined).toBe(true);
+    }
+    expect((await tool(PATH, "get_now")).json.now).toBe("Original now");
+  });
+
   it("update_profile rejects javascript: URLs", async () => {
     const t = await tool(PATH, "update_profile", { links: [{ label: "x", url: "javascript:alert(1)" }] }, auth(key));
     expect(t.isError).toBe(true);

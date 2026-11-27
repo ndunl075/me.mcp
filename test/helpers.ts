@@ -69,6 +69,11 @@ export async function publish(cookie: string, fields: Record<string, string> = {
   return call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: cookie }, body: f.body });
 }
 
+export async function unpublish(cookie: string): Promise<Response> {
+  const f = form({ action: "unpublish" });
+  return call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: cookie }, body: f.body });
+}
+
 export async function createKey(cookie: string): Promise<string> {
   const res = await call("/me/edit/key", { method: "POST", headers: { Cookie: cookie } });
   const html = await res.text();

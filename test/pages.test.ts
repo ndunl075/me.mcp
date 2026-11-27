@@ -1,11 +1,21 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { call, form, publish, signIn } from "./helpers";
+import { call, form, publish, signIn, unpublish } from "./helpers";
 
 let cookie: string;
 
+const GINA = { name: "Gina Page", headline: "Page builder", now: "Testing pages", links: "Home | https://gina.example.com" };
+
+// Published explicitly, so every test below starts from a known public profile.
 beforeAll(async () => {
   cookie = await signIn("gina");
+  await publish(cookie, GINA);
+  expect((await call("/me/gina")).status).toBe(200);
 });
+
+const post = (fields: Record<string, string>, c = cookie) => {
+  const f = form(fields);
+  return call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: c }, body: f.body });
+};
 
 describe("sign-in", () => {
   it("dev login sets a session cookie and redirects", async () => {
@@ -28,12 +38,7 @@ describe("sign-in", () => {
 
 describe("editor", () => {
   it("action=publish saves and redirects to the profile", async () => {
-    const res = await publish(cookie, {
-      name: "Gina Page",
-      headline: "Page builder",
-      now: "Testing pages",
-      links: "Home | https://gina.example.com",
-    });
+    const res = await publish(cookie, { ...GINA, now: "Testing publish" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("http://localhost/me/gina");
 
@@ -41,22 +46,24 @@ describe("editor", () => {
     expect(page.status).toBe(200);
     const html = await page.text();
     expect(html).toContain("Gina Page");
-    expect(html).toContain("Testing pages");
+    expect(html).toContain("Testing publish");
   });
 
   it("a bad link URL is rejected with 400 and nothing is saved", async () => {
-    const f = form({ action: "save", name: "Changed", links: "Bad | javascript:alert(1)" });
-    const res = await call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: cookie }, body: f.body });
+    expect((await call("/me/gina")).status).toBe(200);
+    const res = await post({ action: "save", ...GINA, name: "Changed Name", links: "Bad | javascript:alert(1)" });
     expect(res.status).toBe(400);
-    const html = await (await call("/me/gina")).text();
-    expect(html).not.toContain("Changed");
+    const page = await call("/me/gina");
+    expect(page.status).toBe(200);
+    expect(await page.text()).not.toContain("Changed Name");
   });
 
-  it("save without publish keeps the redirect on the editor", async () => {
-    const f = form({ action: "save", name: "Gina Page", now: "Still testing" });
-    const res = await call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: cookie }, body: f.body });
+  it("a plain save persists the data", async () => {
+    const res = await post({ action: "save", ...GINA, now: "Saved via plain save" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("http://localhost/me/edit?saved=1");
+    const page = await call("/me/gina", { headers: { Cookie: cookie } });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Saved via plain save");
   });
 
   it("POST /edit requires sign-in", async () => {
@@ -70,8 +77,9 @@ describe("editor", () => {
 describe("visibility", () => {
   it("an unpublished profile is 404 for others but visible to its owner", async () => {
     const hCookie = await signIn("quietquinn");
-    const f = form({ action: "unpublish" });
-    await call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: hCookie }, body: f.body });
+    await publish(hCookie, { name: "Quinn" });
+    expect((await call("/me/quietquinn")).status).toBe(200);
+    await unpublish(hCookie);
 
     expect((await call("/me/quietquinn")).status).toBe(404);
     expect((await call("/me/quietquinn/llms.txt")).status).toBe(404);
@@ -87,8 +95,7 @@ describe("visibility", () => {
     const c = await signIn("toggler");
     await publish(c, { name: "Toggler" });
     expect((await call("/me/toggler")).status).toBe(200);
-    const f = form({ action: "unpublish" });
-    await call("/me/edit", { method: "POST", headers: { ...f.headers, Cookie: c }, body: f.body });
+    await unpublish(c);
     expect((await call("/me/toggler")).status).toBe(404);
   });
 });
