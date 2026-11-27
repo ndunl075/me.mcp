@@ -56,7 +56,7 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
             <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP server"}
           </a>
           <a class="btn btn-light btn-lg" href={example ? `${b}/${example}` : "#how"}>
-            See an example
+            See a live server
           </a>
         </div>
         {!ctx.session && <p class="consent">Uses your public GitHub profile. Edit or delete anytime.</p>}

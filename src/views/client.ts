@@ -43,21 +43,30 @@ export const CLIENT_JS = /* js */ `
     });
   }
 
-  // Hero chip: cycle "@you" through people who just joined. Width is fixed to the longest so the headline never jumps.
+  // Hero chip: type out "@you" and recent handles, hold, backspace, repeat. Width is fixed to the longest handle
+  // (caret included) so the headline never reflows.
   var cyc=document.querySelector('[data-cycle]');
   if(cyc){
     var names=[];try{names=JSON.parse(cyc.getAttribute('data-cycle'))}catch(e){}
-    if(names.length>1)(document.fonts?document.fonts.ready:Promise.resolve()).then(function(){
-      var w=0;names.forEach(function(n){cyc.textContent=n;w=Math.max(w,cyc.getBoundingClientRect().width)});
-      cyc.style.width=Math.ceil(w)+'px';cyc.textContent=names[0];
-      var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if(!reduce){
-        var idx=0;
-        setInterval(function(){
-          cyc.classList.add('out');
-          setTimeout(function(){idx=(idx+1)%names.length;cyc.textContent=names[idx];cyc.classList.remove('out')},250);
-        },2200);
-      }
+    var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if(names.length>1&&!reduce)(document.fonts?document.fonts.ready:Promise.resolve()).then(function(){
+      var txt=document.createElement('span'),car=document.createElement('span');car.className='caret';
+      cyc.textContent='';cyc.appendChild(txt);cyc.appendChild(car);
+      var w=0;names.forEach(function(n){txt.textContent=n;w=Math.max(w,cyc.getBoundingClientRect().width)});
+      cyc.style.width=Math.ceil(w)+'px';
+      var idx=0,len=names[0].length;txt.textContent=names[0];
+      var step=function(){
+        var cur=names[idx];
+        if(len>=cur.length){ // fully typed: hold, then start deleting
+          cyc.classList.remove('typing');
+          setTimeout(function(){cyc.classList.add('typing');del()},1400);
+        }else{len++;txt.textContent=cur.slice(0,len);cyc.classList.add('typing');setTimeout(step,45+Math.random()*15)}
+      };
+      var del=function(){
+        if(len>0){len--;txt.textContent=names[idx].slice(0,len);setTimeout(del,20+Math.random()*10)}
+        else{idx=(idx+1)%names.length;setTimeout(step,180)}
+      };
+      cyc.classList.remove('typing');setTimeout(function(){cyc.classList.add('typing');del()},1400);
     });
   }
 

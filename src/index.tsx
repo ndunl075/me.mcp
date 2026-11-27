@@ -36,6 +36,7 @@ import { handleNetworkMcp, handlePersonMcp } from "./mcp";
 import type { Ctx } from "./views/layout";
 import { Layout } from "./views/layout";
 import { Landing } from "./views/landing";
+import { iconResponse } from "./views/icons";
 import { ProfilePage } from "./views/profile";
 import { EditorPage } from "./views/editor";
 
@@ -54,6 +55,11 @@ export function createApp(base: string) {
     c.set("session", await verifySession(c.env, getCookie(c, SESSION_COOKIE)));
     await next();
   });
+
+  // ---- icons ----------------------------------------------------------------
+  app.get("/favicon.svg", () => iconResponse("svg"));
+  app.get("/favicon-32.png", () => iconResponse("png32"));
+  app.get("/apple-touch-icon.png", () => iconResponse("apple"));
 
   // ---- pages ----------------------------------------------------------------
 
