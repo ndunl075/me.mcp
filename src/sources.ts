@@ -18,6 +18,8 @@ export interface ActivityItem {
   url: string;
   /** ISO-8601 UTC, "2026-11-26T12:34:56Z". */
   ts: string;
+  /** Set when the source claimed a future date and `ts` was clamped to the fetch time (not stored). */
+  clamped?: boolean;
 }
 
 export const TITLE_MAX = 200;
@@ -165,7 +167,7 @@ export function cleanItem(raw: { source: SourceId; kind: ActivityItem["kind"]; t
   if (!Number.isFinite(t)) return null;
   // A feed claiming a date in the future must not pin itself to the top forever.
   const ts = new Date(Math.min(t, now)).toISOString().slice(0, 19) + "Z";
-  return { source: raw.source, kind: raw.kind, title, url, ts };
+  return { source: raw.source, kind: raw.kind, title, url, ts, ...(t > now ? { clamped: true } : {}) };
 }
 
 function tryJson<T>(text: string): T | null {
@@ -348,12 +350,12 @@ export function blueskyToItems(data: BskyFeed, actor: string, now = Date.now()):
   return out;
 }
 
-export async function fetchBluesky(f: Fetcher, actor: string): Promise<ActivityItem[] | null> {
+export async function fetchBluesky(f: Fetcher, actor: string, now = Date.now()): Promise<ActivityItem[] | null> {
   const u = `https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(actor)}&limit=10&filter=posts_no_replies`;
   const res = await f.get(u, { headers: { Accept: "application/json" } });
   if (!res || res.status !== 200) return null;
   const data = tryJson<BskyFeed>(res.text);
-  return data ? blueskyToItems(data, actor) : null;
+  return data ? blueskyToItems(data, actor, now) : null;
 }
 
 // ---- Mastodon -------------------------------------------------------------
@@ -379,7 +381,7 @@ export function mastodonToItems(statuses: MastoStatus[], host: string, now = Dat
   return out;
 }
 
-export async function fetchMastodon(f: Fetcher, acct: { host: string; user: string }): Promise<ActivityItem[] | null> {
+export async function fetchMastodon(f: Fetcher, acct: { host: string; user: string }, now = Date.now()): Promise<ActivityItem[] | null> {
   const lookup = await f.get(`https://${acct.host}/api/v1/accounts/lookup?acct=${encodeURIComponent(acct.user)}`, { headers: { Accept: "application/json" } });
   if (!lookup || lookup.status !== 200) return null;
   const id = tryJson<{ id?: string }>(lookup.text)?.id;
@@ -389,7 +391,7 @@ export async function fetchMastodon(f: Fetcher, acct: { host: string; user: stri
   });
   if (!res || res.status !== 200) return null;
   const data = parseJsonArrayLenient<MastoStatus>(res.text);
-  return data ? mastodonToItems(data, acct.host) : null;
+  return data ? mastodonToItems(data, acct.host, now) : null;
 }
 
 // ---- Blog feeds (RSS / Atom) ----------------------------------------------
@@ -545,11 +547,16 @@ export function discoverFeedLink(html: string, base: string): string | null {
 
 const looksLikeFeed = (r: Fetched) => r.status === 200 && /<(rss|feed|rdf:RDF)[\s>]/i.test(r.text.slice(0, 2000));
 
-/** True when `host` is `verified` or a subdomain of it (a leading "www." on `verified` is ignored). Never a parent domain. */
+/**
+ * True when `host` is the verified host or a subdomain of it. "www." is equivalent to the bare host only for those two
+ * exact names: a verified `www.example.com` allows `example.com` and `*.www.example.com`, never `evil.example.com`,
+ * and a verified `example.com` allows `www.example.com` and `*.example.com`. Never a parent domain.
+ */
 export function hostWithin(host: string, verified: string): boolean {
-  const base = verified.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
   const h = host.toLowerCase().replace(/\.$/, "");
-  return h === base || h.endsWith("." + base);
+  const v = verified.toLowerCase().replace(/\.$/, "");
+  if (h === v || h.endsWith("." + v)) return true;
+  return v.startsWith("www.") && h === v.slice(4);
 }
 
 /** A URL found on a verified site (a discovered feed) must stay on that site or below it. */
@@ -562,7 +569,7 @@ export function sameSite(candidateUrl: string, verifiedUrl: string): boolean {
 }
 
 /** Blog homepage -> feed (via <link rel=alternate> or a common path) -> items. At most BLOG_BUDGET subrequests. */
-export async function fetchBlog(f: Fetcher, blogUrl: string): Promise<ActivityItem[] | null> {
+export async function fetchBlog(f: Fetcher, blogUrl: string, now = Date.now()): Promise<ActivityItem[] | null> {
   // Own counter, not f.used: other sources of the same profile are fetched concurrently through the same Fetcher.
   let spent = 0;
   const get = (u: string) => (spent++, f.get(u, { headers: { Accept: "application/atom+xml, application/rss+xml, application/xml;q=0.9, text/html;q=0.5" } }));
@@ -591,7 +598,7 @@ export async function fetchBlog(f: Fetcher, blogUrl: string): Promise<ActivityIt
   if (!feed) return null;
   const items: ActivityItem[] = [];
   for (const e of parseFeed(feed.text, feed.url)) {
-    const item = cleanItem({ source: "blog", kind: "post", ...e });
+    const item = cleanItem({ source: "blog", kind: "post", ...e }, now);
     if (item) items.push(item);
   }
   return items;
@@ -615,7 +622,7 @@ export interface FetchedSources {
  * Collects activity for `login`: GitHub events plus whichever of blog / Bluesky / Mastodon the person lists on GitHub.
  * `skip` holds sources the owner switched off. Worst case ~9 subrequests (3 GitHub + 3 blog + 1 Bluesky + 2 Mastodon).
  */
-export async function fetchProfileSources(f: Fetcher, gh: GithubCtx, login: string, skip: ReadonlySet<SourceId> = new Set()): Promise<FetchedSources> {
+export async function fetchProfileSources(f: Fetcher, gh: GithubCtx, login: string, skip: ReadonlySet<SourceId> = new Set(), now = Date.now()): Promise<FetchedSources> {
   const enc = encodeURIComponent(login);
   const wantEvents = !skip.has("github");
   const [user, social, events] = await Promise.all([
@@ -625,7 +632,7 @@ export async function fetchProfileSources(f: Fetcher, gh: GithubCtx, login: stri
   ]);
 
   const result: FetchedSources = { profile: null, items: {}, labels: { github: `@${login}` }, githubOk: !!user, socialKnown: Array.isArray(social) };
-  if (Array.isArray(events)) result.items.github = githubEventsToItems(events, login);
+  if (Array.isArray(events)) result.items.github = githubEventsToItems(events, login, now);
   if (!user) return result;
 
   // `blog` is free text on GitHub: accept an http(s) URL or bare host, then require a public https host.
@@ -646,11 +653,11 @@ export async function fetchProfileSources(f: Fetcher, gh: GithubCtx, login: stri
         .catch(() => {}),
     );
   };
-  if (blogUrl) run("blog", new URL(blogUrl).hostname.replace(/^www\./, ""), () => fetchBlog(f, blogUrl));
-  if (result.profile.bluesky) run("bluesky", result.profile.bluesky, () => fetchBluesky(f, result.profile!.bluesky!));
+  if (blogUrl) run("blog", new URL(blogUrl).hostname.replace(/^www\./, ""), () => fetchBlog(f, blogUrl, now));
+  if (result.profile.bluesky) run("bluesky", result.profile.bluesky, () => fetchBluesky(f, result.profile!.bluesky!, now));
   if (result.profile.mastodon) {
     const m = result.profile.mastodon;
-    run("mastodon", `@${m.user}@${m.host}`, () => fetchMastodon(f, m));
+    run("mastodon", `@${m.user}@${m.host}`, () => fetchMastodon(f, m, now));
   }
   await Promise.all(jobs);
   return result;

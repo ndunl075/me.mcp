@@ -71,9 +71,12 @@ export const PROFILE_ACTIVITY = 5;
 
 const one = (s: string) => cleanLine(s);
 
+/** Long runs of blanks inside a line carry no meaning for a reader and cost tokens: collapse them. */
+const squeeze = (s: string) => s.replace(/[ \t]{8,}/g, " ");
+
 /** "Header: first line" plus the rest of a multi-line field, indented so no line of it starts at column 0. */
 function field(header: string, body: string): string {
-  return `${header} ${cleanText(body).replace(/\n(?!\n|$)/g, "\n  ")}`;
+  return `${header} ${squeeze(cleanText(body)).replace(/\n(?!\n|$)/g, "\n  ")}`;
 }
 
 function activityLine(a: ActivityRow): string {
@@ -107,7 +110,7 @@ export function formatProfile(env: Env, p: Profile, activity: ActivityRow[]): st
   if (activity.length) lines.push("Recent:", ...activity.slice(0, PROFILE_ACTIVITY).map((a) => `- ${activityLine(a)}`));
   if (p.links.length) lines.push(`Links: ${linksText(p.links)}`);
   if (p.contact) lines.push(field("Contact:", p.contact));
-  if (p.about) lines.push(field("About:", truncate(cleanText(p.about), ABOUT_PREVIEW)));
+  if (p.about) lines.push(field("About:", truncate(squeeze(cleanText(p.about)), ABOUT_PREVIEW)));
   lines.push(`Page: ${url(env, `/${p.handle}`)}`);
   return lines.join("\n");
 }

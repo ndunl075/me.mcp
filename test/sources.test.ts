@@ -19,6 +19,7 @@ import {
   publicHttpsUrl,
   sameSite,
 } from "../src/sources";
+import { cleanLine, cleanText } from "../src/db";
 import { ATOM, BLOG_HTML, BSKY, GH_EVENTS, GH_SOCIAL, MASTO_STATUSES, NOW, RSS, html, json, xml, zoeFetch } from "./fixtures";
 
 describe("SSRF guard (publicHttpsUrl)", () => {
@@ -83,6 +84,7 @@ describe("Fetcher", () => {
       (async () => new Response(null, { status: 302, headers: { location: to } })) as unknown as typeof fetch;
     expect(await new Fetcher(10, mk("https://evil.example/")).get("https://blog.zoe.example/")).toBeNull();
     expect(await new Fetcher(10, mk("https://zoe.example/")).get("https://blog.zoe.example/")).toBeNull();
+    expect(await new Fetcher(10, mk("https://evil.zoe.example/")).get("https://www.zoe.example/")).toBeNull();
     const ok = (async (u: string) => (u.includes("www.") ? new Response("ok") : new Response(null, { status: 301, headers: { location: "https://www.zoe.example/" } }))) as unknown as typeof fetch;
     expect((await new Fetcher(10, ok).get("https://zoe.example/"))?.text).toBe("ok");
   });
@@ -228,6 +230,13 @@ describe("feeds", () => {
     expect(sameSite("https://other.github.io/feed", "https://zoe.github.io/")).toBe(false);
     expect(sameSite("https://evil.example/feed", "https://zoe.example/")).toBe(false);
     expect(sameSite("https://notzoe.example/feed", "https://zoe.example/")).toBe(false);
+    // www.X is equivalent to X only for those exact names, not a licence for sibling subdomains of X
+    expect(sameSite("https://evil.zoe.example/feed", "https://www.zoe.example/")).toBe(false);
+    expect(sameSite("https://blog.zoe.example/feed", "https://www.zoe.example/")).toBe(false);
+    expect(sameSite("https://zoe.example/feed", "https://www.zoe.example/")).toBe(true);
+    expect(sameSite("https://a.www.zoe.example/feed", "https://www.zoe.example/")).toBe(true);
+    expect(hostWithin("evil.example.com", "www.example.com")).toBe(false);
+    expect(hostWithin("example.com", "www.example.com")).toBe(true);
     expect(hostWithin("a.co.uk", "b.co.uk")).toBe(false);
   });
 });
@@ -361,7 +370,6 @@ describe("adversarial input stays linear", () => {
     parseFeed(feedWrap(h), "https://x.example/");
     mastodonToItems([{ url: "https://h.example/@a/1", content: h, created_at: "2026-11-01T00:00:00Z" }], "h.example", NOW);
     cleanItem({ source: "blog", kind: "post", title: h, url: "https://x.example/p", ts: "2026-11-01T00:00:00Z" }, NOW);
-    // (the Workers runtime's clock does not advance during synchronous work, so the real guard is the test timeout)
     expect(performance.now() - t0).toBeLessThan(500);
   }, 2000);
 
@@ -397,5 +405,31 @@ describe("truncated JSON", () => {
     const events = parseJsonArrayLenient<any>(res!.text)!;
     expect(events.length).toBeGreaterThan(2);
     expect(githubEventsToItems(events, "zoe", NOW).length).toBeGreaterThan(1);
+  });
+});
+
+describe("whitespace runs are linear (cleanText / cleanLine and everything built on them)", () => {
+  const spaced = (n: number) => "a" + " ".repeat(n) + "b";
+  const tabs = (n: number) => "a" + "\t".repeat(n) + "b";
+
+  it("20 Mastodon statuses and 15 feed titles of 990-space runs cost a few ms in total", () => {
+    const t0 = performance.now();
+    const statuses = Array.from({ length: 20 }, (_, i) => ({ url: `https://h.example/@a/${i}`, content: `<p>${spaced(990)}</p>`, created_at: "2026-11-01T00:00:00Z" }));
+    expect(mastodonToItems(statuses, "h.example", NOW)).toHaveLength(20);
+    const feed = `<rss>${Array.from({ length: 15 }, (_, i) => `<item><title>${spaced(990)}</title><link>https://x.example/${i}</link><pubDate>2026-11-01T00:00:00Z</pubDate></item>`).join("")}</rss>`;
+    const posts = parseFeed(feed, "https://x.example/").map((e) => cleanItem({ source: "blog", kind: "post", ...e }, NOW));
+    expect(posts.filter(Boolean)).toHaveLength(15);
+    expect(performance.now() - t0).toBeLessThan(5); // was ~12 ms + ~10 ms with the quadratic regex
+  });
+
+  it("cleanText and cleanLine on 100 KB blank runs, with and without a following newline", () => {
+    const t0 = performance.now();
+    for (const s of [spaced(100_000), tabs(100_000), " ".repeat(100_000), spaced(100_000) + "\n", ("x" + " ".repeat(500)).repeat(200)]) {
+      cleanText(s);
+      cleanLine(s);
+    }
+    expect(performance.now() - t0).toBeLessThan(40);
+    expect(cleanText("a  \t \nb")).toBe("a\nb"); // behaviour unchanged: trailing blanks before a newline go
+    expect(cleanText("a b\t c")).toBe("a b\t c");
   });
 });

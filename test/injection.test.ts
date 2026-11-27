@@ -82,3 +82,21 @@ describe("newline injection cannot forge structure", () => {
     for (const l of col0(t.text)) expect(l, l).toMatch(allowedHeads);
   });
 });
+
+describe("read path stays linear on hostile stored text", () => {
+  it("get_profile / get_about on rows holding long blank runs (stored before cleaning existed)", async () => {
+    const blanks = "a" + " ".repeat(7990) + "b";
+    await env.DB.prepare("UPDATE profiles SET about = ?, bio = ?, now = ?, contact = ?, headline = ? WHERE handle = 'mallory'")
+      .bind(blanks, blanks, blanks, blanks, blanks)
+      .run();
+    const t0 = performance.now();
+    const p = await tool("/me/mallory/mcp", "get_profile");
+    const a = await tool("/me/mallory/mcp", "get_about");
+    const n = await tool("/me/mcp", "lookup_person", { handle: "mallory" });
+    expect(performance.now() - t0).toBeLessThan(250); // ~25 ms per field() with the quadratic regex in Node-like engines
+    expect(p.text).toContain("About: a b"); // long blank runs are collapsed, not echoed
+    expect(p.text.length).toBeLessThan(1500);
+    expect(a.text).toContain("About: a b");
+    expect(n.text).toContain(NOTE_PREFIX);
+  });
+});

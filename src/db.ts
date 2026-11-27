@@ -61,7 +61,9 @@ export function cleanText(s: string): string {
     .replace(TAGS, (_, flag) => flag ?? "")
     .replace(IVS, (m, ideograph) => (ideograph ? m : ""))
     .replace(/[\u200C\u200D]{2,}/g, "")
-    .replace(/[ \t]+\n/g, "\n")
+    // Trailing spaces/tabs before a newline. The lookbehind makes each run of blanks start the match only once: without
+    // it `[ \t]+\n` rescans the rest of a long blank run from every position (quadratic on "a" + 8,000 spaces + "b").
+    .replace(/(?<![ \t])[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

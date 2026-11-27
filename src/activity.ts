@@ -15,8 +15,16 @@ export const KEEP_TOTAL = 15;
 export const KEEP_PER_SOURCE = 8;
 /** A profile is refreshed at most once per this long. */
 export const REFRESH_EVERY_MS = 24 * 3600_000;
-/** After a failed GitHub fetch, retry sooner than a full day (but not on the very next run). */
+/** First retry after a failed refresh; doubles with each consecutive failure up to RETRY_MAX_MS. */
 export const RETRY_AFTER_MS = 3 * 3600_000;
+export const RETRY_MAX_MS = 7 * 86400_000;
+/** A blog / Bluesky / Mastodon source that fails this many refreshes in a row is switched off (the owner can re-enable it). */
+export const SOURCE_DISABLE_AFTER = 5;
+
+/** Delay before retrying a profile that has failed `failures` times in a row (this attempt included): 3 h, 6 h, 12 h, ... 7 d. */
+export function retryDelayMs(failures: number): number {
+  return Math.min(RETRY_AFTER_MS * 2 ** Math.max(0, failures - 1), RETRY_MAX_MS);
+}
 /**
  * Profiles refreshed per cron run. wrangler.jsonc runs the cron every 5 minutes: 288 runs/day x 2 = up to 576 profile
  * refreshes/day (each at most once per 24 h, so capacity is ~576 published profiles; beyond that raise the batch or the
@@ -44,6 +52,7 @@ export interface SourceRow {
   enabled: boolean;
   label: string;
   last_fetched: string | null;
+  failures: number;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString().slice(0, 19) + "Z";
@@ -66,9 +75,9 @@ export async function listActivity(db: D1Database, handle: string, limit = KEEP_
 export async function listSources(db: D1Database, handle: string): Promise<SourceRow[]> {
   try {
     const { results } = await db
-      .prepare("SELECT source, enabled, label, last_fetched FROM sources WHERE handle = ? ORDER BY source")
+      .prepare("SELECT source, enabled, label, last_fetched, failures FROM sources WHERE handle = ? ORDER BY source")
       .bind(handle)
-      .all<{ source: SourceId; enabled: number; label: string; last_fetched: string | null }>();
+      .all<{ source: SourceId; enabled: number; label: string; last_fetched: string | null; failures: number }>();
     return results.map((r) => ({ ...r, enabled: r.enabled === 1 }));
   } catch {
     return [];
@@ -80,7 +89,7 @@ export async function setSourceEnabled(db: D1Database, handle: string, source: S
   if (!SOURCE_IDS.includes(source)) return;
   const stmts = [
     db
-      .prepare("INSERT INTO sources (handle, source, enabled) VALUES (?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET enabled = excluded.enabled")
+      .prepare("INSERT INTO sources (handle, source, enabled) VALUES (?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET enabled = excluded.enabled, failures = 0")
       .bind(handle, source, enabled ? 1 : 0),
   ];
   if (!enabled) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, source));
@@ -108,7 +117,12 @@ const key = (r: { source: string; url: string }) => `${r.source}\n${r.url}`;
 /** What to write to turn `existing` into the kept subset of existing + fetched. Unchanged rows produce nothing. */
 export function planWrites(existing: ActivityRow[], fetched: ActivityItem[]) {
   const merged = new Map<string, ActivityRow>(existing.map((r) => [key(r), r]));
-  for (const it of fetched) merged.set(key(it), it);
+  for (const it of fetched) {
+    // A future-dated item was clamped to "now" at fetch time. Clamp once: keep the stored date so it neither shows as
+    // "today" forever nor gets rewritten on every refresh.
+    const o = merged.get(key(it));
+    merged.set(key(it), it.clamped && o ? { ...it, ts: o.ts } : it);
+  }
   const final = selectKeep([...merged.values()]);
   const finalKeys = new Set(final.map(key));
   const old = new Map(existing.map((r) => [key(r), r]));
@@ -141,9 +155,9 @@ export interface RefreshResult {
  * Fetches fresh activity for one profile from GitHub and whatever it vouches for there, and writes only what
  * changed. Ignores the 24 h rule (callers such as sign-in want an immediate refresh); refreshStaleProfiles applies it.
  *
- * The refresh marker is claimed BEFORE any fetching (as "fetched 21 h ago", i.e. retry in ~3 h) and set to now on
- * success. A profile whose refresh throws or is killed mid-way therefore goes to the back of the queue instead of
- * being picked first on every run.
+ * The refresh marker is claimed BEFORE any fetching, as a failure with exponential backoff (retry in 3 h, then 6 h, ...
+ * up to 7 days), and set to now with the failure count reset on success. A profile whose refresh fails, throws or is
+ * killed mid-way therefore goes to the back of the queue instead of being picked first on every run.
  */
 export async function refreshProfileActivity(
   env: Pick<Env, "DB" | "GITHUB_CLIENT_ID" | "GITHUB_CLIENT_SECRET">,
@@ -154,28 +168,33 @@ export async function refreshProfileActivity(
   const now = deps.now ?? Date.now();
   const f = deps.fetcher ?? new Fetcher(PER_PROFILE_MIN_BUDGET + 3, deps.fetch);
   const before = f.used;
-  const marker = (ms: number) =>
+  const marker = (ms: number, failures: number) =>
     db
       .prepare(
-        "INSERT INTO sources (handle, source, last_fetched, label) VALUES (?, 'github', ?, ?) ON CONFLICT(handle, source) DO UPDATE SET last_fetched = excluded.last_fetched, label = excluded.label",
+        "INSERT INTO sources (handle, source, last_fetched, label, failures) VALUES (?, 'github', ?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET last_fetched = excluded.last_fetched, label = excluded.label, failures = excluded.failures",
       )
-      .bind(handle, iso(ms), `@${handle}`);
+      .bind(handle, iso(ms), `@${handle}`, failures);
 
-  const [, existingSources, existingActivity] = await db.batch<Record<string, unknown>>([
-    marker(now - (REFRESH_EVERY_MS - RETRY_AFTER_MS)), // the claim
-    db.prepare("SELECT source, enabled, label FROM sources WHERE handle = ?").bind(handle),
+  const [existingSources, existingActivity] = await db.batch<Record<string, unknown>>([
+    db.prepare("SELECT source, enabled, label, failures FROM sources WHERE handle = ?").bind(handle),
     db.prepare("SELECT source, kind, title, url, ts FROM activity WHERE handle = ?").bind(handle),
   ]);
-  const srcRows = existingSources.results as unknown as { source: SourceId; enabled: number; label: string }[];
+  const srcRows = existingSources.results as unknown as { source: SourceId; enabled: number; label: string; failures: number }[];
   const actRows = existingActivity.results as unknown as ActivityRow[];
   const skip = new Set<SourceId>(srcRows.filter((r) => r.enabled === 0).map((r) => r.source));
 
-  const got = await fetchProfileSources(f, { auth: githubBasicAuth(env) }, handle, skip);
-  // GitHub unreachable or rate limited: keep everything. The claim above already schedules the retry in ~3 h.
+  // The claim: count this attempt as a failure and schedule the retry with backoff. Success below resets both. If the
+  // refresh throws or is killed, the claim stands, so a profile that never succeeds (deleted GitHub user, hostile
+  // source) backs off from 3 h up to 7 days instead of occupying a slot every few hours.
+  const failures = (srcRows.find((r) => r.source === "github")?.failures ?? 0) + 1;
+  await marker(now - REFRESH_EVERY_MS + retryDelayMs(failures), failures).run();
+
+  const got = await fetchProfileSources(f, { auth: githubBasicAuth(env) }, handle, skip, now);
   if (!got.githubOk) return { ok: false, written: 0, deleted: 0, sourceRows: 0, subrequests: f.used - before };
 
-  const stmts: D1PreparedStatement[] = [marker(now)];
-  // Per-source bookkeeping, written only when something changed: new source, new label, or GitHub stopped listing it.
+  const stmts: D1PreparedStatement[] = [marker(now, 0)];
+  // Per-source bookkeeping, written only when something changed: new source, new label, a change in the failure count,
+  // auto-disable, or GitHub no longer lists it.
   const vouched = new Set<SourceId>(["github"]);
   if (got.profile?.blog) vouched.add("blog");
   if (got.socialKnown) {
@@ -183,20 +202,29 @@ export async function refreshProfileActivity(
     if (got.profile?.mastodon) vouched.add("mastodon");
   }
   let sourceRows = 0;
+  const autoDisabled = new Set<SourceId>();
   for (const id of ["blog", "bluesky", "mastodon"] as const) {
     const known = id === "blog" || got.socialKnown;
     const row = srcRows.find((r) => r.source === id);
     if (vouched.has(id)) {
       const label = got.labels[id] ?? "";
-      if (!row || row.label !== label) {
+      const ok = !!got.items[id];
+      const prev = row?.failures ?? 0;
+      const fails = skip.has(id) ? prev : ok ? 0 : prev + 1;
+      const disable = !skip.has(id) && !ok && fails >= SOURCE_DISABLE_AFTER;
+      if (!row || row.label !== label || fails !== prev || disable) {
         sourceRows++;
         stmts.push(
           db
             .prepare(
-              "INSERT INTO sources (handle, source, label, last_fetched) VALUES (?, ?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET label = excluded.label, last_fetched = excluded.last_fetched",
+              "INSERT INTO sources (handle, source, label, last_fetched, failures, enabled) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(handle, source) DO UPDATE SET label = excluded.label, failures = excluded.failures, enabled = CASE WHEN excluded.enabled = 0 THEN 0 ELSE enabled END, last_fetched = COALESCE(excluded.last_fetched, last_fetched)",
             )
-            .bind(handle, id, label, got.items[id] ? iso(now) : null),
+            .bind(handle, id, label, ok ? iso(now) : null, fails, disable ? 0 : 1),
         );
+      }
+      if (disable) {
+        autoDisabled.add(id);
+        if (actRows.some((r) => r.source === id)) stmts.push(db.prepare("DELETE FROM activity WHERE handle = ? AND source = ?").bind(handle, id));
       }
     } else if (known) {
       if (row) {
@@ -210,7 +238,7 @@ export async function refreshProfileActivity(
   const fetched = SOURCE_IDS.flatMap((id) => (vouched.has(id) && !skip.has(id) ? (got.items[id] ?? []) : []));
   // Rows of sources GitHub no longer lists were deleted above; leave them out of the merge.
   const isKnown = (id: SourceId) => id === "github" || id === "blog" || got.socialKnown;
-  const existing = actRows.filter((r) => vouched.has(r.source) || !isKnown(r.source));
+  const existing = actRows.filter((r) => !autoDisabled.has(r.source) && (vouched.has(r.source) || !isKnown(r.source)));
   const { upserts, deletes } = planWrites(existing, fetched);
   for (const r of upserts) {
     stmts.push(

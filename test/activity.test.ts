@@ -6,6 +6,8 @@ import {
   KEEP_TOTAL,
   REFRESH_BATCH,
   REFRESH_EVERY_MS,
+  SOURCE_DISABLE_AFTER,
+  retryDelayMs,
   listActivity,
   listSources,
   planWrites,
@@ -153,6 +155,87 @@ describe("refreshProfileActivity", () => {
     await deleteProfile(env.DB, "tmpuser");
     expect(await listActivity(env.DB, "tmpuser")).toEqual([]);
     expect(await listSources(env.DB, "tmpuser")).toEqual([]);
+  });
+});
+
+describe("backoff and auto-disable", () => {
+  const H = 3600_000;
+  const down = () => zoeFetch({ "https://api.github.com/": () => json({ message: "Not Found" }, 404) }).fn;
+
+  it("a profile that keeps failing is retried after 3 h, 6 h, 12 h, 24 h ... capped at 7 days; success resets", async () => {
+    await makeProfile("ghost", 9700, 1, "1998-01-01 00:00:00");
+    let now = NOW;
+    const due = async (at: number) => (await selectStaleHandles(env.DB, at, 500)).includes("ghost");
+    const expectDelays = [3, 6, 12, 24, 48, 96, 168, 168];
+    for (const h of expectDelays) {
+      await refreshProfileActivity(env, "ghost", { fetch: down(), now });
+      expect(await due(now + h * H - 1000), `not due ${h}h-1s after`).toBe(false);
+      expect(await due(now + h * H + 1000), `due ${h}h after`).toBe(true);
+      now += h * H + 1000;
+    }
+    const src = (await listSources(env.DB, "ghost")).find((s) => s.source === "github")!;
+    expect(src.failures).toBe(expectDelays.length);
+    // GitHub comes back: success marks it fresh for 24 h and clears the failures.
+    const gh = zoeFetch({ "https://api.github.com/users/ghost/events": () => json([]), "https://api.github.com/users/ghost/social": () => json([]), "https://api.github.com/users/ghost": () => json({ blog: "" }) });
+    await refreshProfileActivity(env, "ghost", { fetch: gh.fn, now });
+    expect((await listSources(env.DB, "ghost")).find((s) => s.source === "github")).toMatchObject({ failures: 0, last_fetched: iso(now) });
+    expect(await due(now + 23 * H)).toBe(false);
+    expect(retryDelayMs(1)).toBe(3 * H);
+    expect(retryDelayMs(99)).toBe(7 * 24 * H);
+  });
+
+  it("a refresh that throws also backs off", async () => {
+    await makeProfile("crasher", 9701, 1, "1998-01-02 00:00:00");
+    const boom = zoeFetch({ "https://api.github.com/users/crasher": () => new Response(new ReadableStream({ pull: () => Promise.reject(new Error("x")) })) }).fn;
+    await refreshStaleProfiles(env, { fetch: boom, now: NOW, batch: 1 });
+    await refreshStaleProfiles(env, { fetch: boom, now: NOW + 4 * H, batch: 5 });
+    expect((await listSources(env.DB, "crasher")).find((s) => s.source === "github")!.failures).toBe(2);
+    expect(await selectStaleHandles(env.DB, NOW + 4 * H + 5 * H, 500)).not.toContain("crasher"); // 6 h delay now
+  });
+
+  it("a source that fails SOURCE_DISABLE_AFTER refreshes in a row is switched off; re-enabling clears the count", async () => {
+    await makeProfile("flaky", 9702);
+    const flaky = () => zoeFetch({
+      "https://api.github.com/users/flaky/events": () => json([]),
+      "https://api.github.com/users/flaky/social": () => json([{ provider: "bluesky", url: "https://bsky.app/profile/flaky.example.com" }]),
+      "https://api.github.com/users/flaky": () => json({ blog: "" }),
+      "https://public.api.bsky.app/": () => new Response("down", { status: 500 }),
+    }).fn;
+    for (let i = 1; i <= SOURCE_DISABLE_AFTER; i++) {
+      const r = await refreshProfileActivity(env, "flaky", { fetch: flaky(), now: NOW + i });
+      expect(r.sourceRows).toBe(1); // the failure count changed: one bookkeeping write
+      const row = (await listSources(env.DB, "flaky")).find((s) => s.source === "bluesky")!;
+      expect(row).toMatchObject({ failures: i, enabled: i < SOURCE_DISABLE_AFTER });
+    }
+    // switched off: no longer fetched
+    const f = zoeFetch({ "https://api.github.com/users/flaky/events": () => json([]), "https://api.github.com/users/flaky/social": () => json([{ provider: "bluesky", url: "https://bsky.app/profile/flaky.example.com" }]), "https://api.github.com/users/flaky": () => json({ blog: "" }) });
+    const r = await refreshProfileActivity(env, "flaky", { fetch: f.fn, now: NOW + 100 });
+    expect(f.calls.some((c) => c.url.includes("bsky"))).toBe(false);
+    expect(r.sourceRows).toBe(0);
+    await setSourceEnabled(env.DB, "flaky", "bluesky", true);
+    expect((await listSources(env.DB, "flaky")).find((s) => s.source === "bluesky")).toMatchObject({ enabled: true, failures: 0 });
+  });
+});
+
+describe("future-dated items", () => {
+  it("are clamped once and not rewritten (or re-dated) by later refreshes", async () => {
+    await makeProfile("future", 9800);
+    const feedWith = (date: string) => ({
+      "https://api.github.com/users/future/events": () => json([]),
+      "https://api.github.com/users/future/social": () => json([]),
+      "https://api.github.com/users/future": () => json({ blog: "https://f.example/feed.xml" }),
+      "https://f.example/feed.xml": () => new Response(`<rss><item><title>Time traveller</title><link>https://f.example/p</link><pubDate>${date}</pubDate></item></rss>`),
+    });
+    const r1 = await refreshProfileActivity(env, "future", { fetch: zoeFetch(feedWith("2099-01-01T00:00:00Z")).fn, now: NOW });
+    expect(r1.written).toBe(1);
+    expect((await listActivity(env.DB, "future"))[0].ts).toBe(iso(NOW));
+    const r2 = await refreshProfileActivity(env, "future", { fetch: zoeFetch(feedWith("2099-01-01T00:00:00Z")).fn, now: NOW + 3 * 86400_000 });
+    expect(r2).toMatchObject({ written: 0, deleted: 0 });
+    expect((await listActivity(env.DB, "future"))[0].ts).toBe(iso(NOW)); // not "today" again
+    // once the claimed date is no longer in the future, the real date is stored
+    const r3 = await refreshProfileActivity(env, "future", { fetch: zoeFetch(feedWith("2026-11-27T00:00:00Z")).fn, now: NOW + 3 * 86400_000 });
+    expect(r3.written).toBe(1);
+    expect((await listActivity(env.DB, "future"))[0].ts).toBe("2026-11-27T00:00:00Z");
   });
 });
 

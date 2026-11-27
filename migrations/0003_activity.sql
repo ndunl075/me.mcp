@@ -12,12 +12,14 @@ CREATE TABLE activity (
 CREATE INDEX activity_handle_ts ON activity (handle, ts DESC);
 
 -- One row per source discovered for a profile. `enabled` is the owner's on/off switch; `label` is a short
--- human-readable identifier (blog host, @handle). The 'github' row's last_fetched is also the profile's refresh marker.
+-- human-readable identifier (blog host, @handle). The 'github' row's last_fetched is also the profile's refresh marker
+-- (it may sit in the future while a failing profile is backed off).
 CREATE TABLE sources (
   handle       TEXT NOT NULL,
   source       TEXT NOT NULL,
   enabled      INTEGER NOT NULL DEFAULT 1,
   label        TEXT NOT NULL DEFAULT '',
   last_fetched TEXT,
+  failures     INTEGER NOT NULL DEFAULT 0,   -- consecutive failed refreshes; drives retry backoff / auto-disable
   PRIMARY KEY (handle, source)
 );
