@@ -49,25 +49,44 @@ export const CLIENT_JS = /* js */ `
   if(cyc){
     var names=[];try{names=JSON.parse(cyc.getAttribute('data-cycle'))}catch(e){}
     var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if(names.length>1&&!reduce)(document.fonts?document.fonts.ready:Promise.resolve()).then(function(){
+    if(names.length>1&&!reduce){
       var txt=document.createElement('span'),car=document.createElement('span');car.className='caret';
-      cyc.textContent='';cyc.appendChild(txt);cyc.appendChild(car);
-      var w=0;names.forEach(function(n){txt.textContent=n;w=Math.max(w,cyc.getBoundingClientRect().width)});
-      cyc.style.width=Math.ceil(w)+'px';
-      var idx=0,len=names[0].length;txt.textContent=names[0];
+      // Width is set in em so it scales with the fluid headline; measured with an off-screen probe, re-measured when fonts load.
+      var measure=function(){
+        var probe=document.createElement('span');probe.className=cyc.className;
+        probe.style.cssText='position:absolute;visibility:hidden;width:auto;left:0;top:0';
+        cyc.parentNode.appendChild(probe);
+        var w=0;names.forEach(function(n){probe.textContent=n;probe.appendChild(car.cloneNode());w=Math.max(w,probe.getBoundingClientRect().width)});
+        var fs=parseFloat(getComputedStyle(cyc).fontSize)||16;
+        cyc.parentNode.removeChild(probe);
+        cyc.style.width=(Math.ceil(w)/fs).toFixed(3)+'em';
+      };
+      cyc.textContent='';cyc.appendChild(txt);cyc.appendChild(car);txt.textContent=names[0];
+      var idx=0,len=names[0].length,timer=0;
+      var later=function(fn,ms){timer=setTimeout(fn,ms)};
       var step=function(){
+        if(document.hidden){later(step,500);return}
         var cur=names[idx];
-        if(len>=cur.length){ // fully typed: hold, then start deleting
+        if(len>=cur.length){
           cyc.classList.remove('typing');
-          setTimeout(function(){cyc.classList.add('typing');del()},1400);
-        }else{len++;txt.textContent=cur.slice(0,len);cyc.classList.add('typing');setTimeout(step,45+Math.random()*15)}
+          later(function(){cyc.classList.add('typing');del()},1400);
+        }else{len++;txt.textContent=cur.slice(0,len);cyc.classList.add('typing');later(step,45+Math.random()*15)}
       };
       var del=function(){
-        if(len>0){len--;txt.textContent=names[idx].slice(0,len);setTimeout(del,20+Math.random()*10)}
-        else{idx=(idx+1)%names.length;setTimeout(step,180)}
+        if(document.hidden){later(del,500);return}
+        if(len>0){len--;txt.textContent=names[idx].slice(0,len);later(del,20+Math.random()*10)}
+        else{idx=(idx+1)%names.length;later(step,180)}
       };
-      cyc.classList.remove('typing');setTimeout(function(){cyc.classList.add('typing');del()},1400);
-    });
+      var started=false;
+      var go=function(){measure();if(!started){started=true;cyc.classList.remove('typing');later(function(){cyc.classList.add('typing');del()},1400)}};
+      var fl=document.fonts;
+      if(fl){
+        fl.ready.then(go);
+        fl.addEventListener&&fl.addEventListener('loadingdone',measure);
+        try{Promise.all([fl.load('500 1em Inter'),fl.load('1em "Cal Sans"')]).then(measure,function(){})}catch(e){}
+      }else go();
+      window.addEventListener('resize',measure);
+    }
   }
 
   // Character counters

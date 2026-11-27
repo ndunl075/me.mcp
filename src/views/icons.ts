@@ -11,9 +11,11 @@ function bytes(b64: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-const CACHE = "public, max-age=31536000, immutable";
+const LONG = "public, max-age=31536000, immutable";
+const SHORT = "public, max-age=86400, stale-while-revalidate=604800"; // unversioned requests (iOS, /favicon.ico)
 
-export function iconResponse(kind: "svg" | "png32" | "apple"): Response {
+export function iconResponse(kind: "svg" | "png32" | "apple", versioned: boolean): Response {
+  const CACHE = versioned ? LONG : SHORT;
   if (kind === "svg") return new Response(FAVICON_SVG, { headers: { "content-type": "image/svg+xml", "cache-control": CACHE } });
   return new Response(bytes(kind === "png32" ? FAVICON_32_B64 : APPLE_TOUCH_B64), {
     headers: { "content-type": "image/png", "cache-control": CACHE },

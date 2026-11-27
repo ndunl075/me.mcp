@@ -12,7 +12,7 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
   // Hero chip: signed in → your own avatar + handle. Otherwise → real people who just joined, cycling.
   const me = ctx.session?.login;
   const recent = fresh.slice(0, 3);
-  const chipHandles = me ? [`@${me}`] : ["@you", ...recent.map((p) => `@${p.handle}`)];
+  const chipHandles = me ? [`@${me}`] : ["@you", ...recent.filter((p) => p.handle.length <= 12).map((p) => `@${p.handle}`)];
 
   return (
     <Layout
@@ -55,9 +55,11 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
           <a class="btn btn-dark btn-lg" href={start}>
             <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP server"}
           </a>
-          <a class="btn btn-light btn-lg" href={example ? `${b}/${example}` : "#how"}>
-            See a live server
-          </a>
+          {example && (
+            <a class="btn btn-light btn-lg" href={`${b}/${example}`}>
+              See a live server
+            </a>
+          )}
         </div>
         {!ctx.session && <p class="consent">Uses your public GitHub profile. Edit or delete anytime.</p>}
       </section>

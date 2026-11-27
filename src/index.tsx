@@ -51,15 +51,16 @@ export function createApp(base: string) {
     session: c.get("session"),
   });
 
+  // ---- icons (before the session middleware: no cookie verification or DB work for static assets) ----
+  app.get("/favicon.svg", (c) => iconResponse("svg", c.req.query("v") !== undefined));
+  app.get("/favicon-32.png", (c) => iconResponse("png32", c.req.query("v") !== undefined));
+  app.get("/favicon.ico", () => iconResponse("png32", false));
+  app.get("/apple-touch-icon.png", (c) => iconResponse("apple", c.req.query("v") !== undefined));
+
   app.use("*", async (c, next) => {
     c.set("session", await verifySession(c.env, getCookie(c, SESSION_COOKIE)));
     await next();
   });
-
-  // ---- icons ----------------------------------------------------------------
-  app.get("/favicon.svg", () => iconResponse("svg"));
-  app.get("/favicon-32.png", () => iconResponse("png32"));
-  app.get("/apple-touch-icon.png", () => iconResponse("apple"));
 
   // ---- pages ----------------------------------------------------------------
 

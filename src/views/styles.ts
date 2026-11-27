@@ -52,7 +52,7 @@ code,pre,kbd{font-family:var(--mono);font-size:.875em}
 .btn-lg{height:52px;padding:0 26px;font-size:18px;border-radius:13px;font-family:var(--display);font-weight:400;letter-spacing:-.01em}
 .btn-sm{height:32px;padding:0 12px;font-size:13px;border-radius:8px}
 .btn svg{flex:none}
-@media (max-width:560px){.btn-lg{height:52px;font-size:17px;width:100%}}
+@media (max-width:560px){.btn-lg{height:52px;font-size:18px;width:100%}}
 
 /* ---------- hero ---------- */
 .hero{padding-top:96px;padding-bottom:40px;text-align:center}
