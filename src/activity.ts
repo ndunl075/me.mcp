@@ -18,10 +18,12 @@ export const REFRESH_EVERY_MS = 24 * 3600_000;
 /** After a failed GitHub fetch, retry sooner than a full day (but not on the very next run). */
 export const RETRY_AFTER_MS = 3 * 3600_000;
 /**
- * Profiles refreshed per cron run. Each costs at most ~9 subrequests (3 GitHub + 3 blog + 1 Bluesky + 2 Mastodon),
- * so 4 stays well under the free plan's 50. CPU is the other limit (measurements are in the PR).
+ * Profiles refreshed per cron run (wrangler.jsonc: every 15 min, so up to 192 profiles/day). The limit is CPU, not
+ * subrequests: a profile costs ~1 ms of CPU once warm and the first one of a fresh isolate ~5 ms (Node measurement of
+ * the full fetch/parse/merge path with real API payloads), against 10 ms per invocation. Subrequests are at most ~9 per
+ * profile (3 GitHub + 3 blog + 1 Bluesky + 2 Mastodon), far under 50.
  */
-export const REFRESH_BATCH = 4;
+export const REFRESH_BATCH = 2;
 /** Hard stop for the whole run, below the 50-subrequest limit, in case redirects add hops. */
 export const RUN_SUBREQUEST_BUDGET = 44;
 const PER_PROFILE_MIN_BUDGET = 9;

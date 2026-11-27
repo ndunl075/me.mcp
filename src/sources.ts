@@ -383,10 +383,10 @@ const MAX_BLOCK = 30_000;
 /** Tiny regex extraction of <item> (RSS 2.0) and <entry> (Atom) blocks. Not an XML parser, by design (CPU). */
 export function parseFeed(xml: string, baseUrl: string): { title: string; url: string; ts: string }[] {
   const out: { title: string; url: string; ts: string }[] = [];
-  const re = /<(item|entry)[\s>]/gi;
+  const re = /<(item|entry)[\s>]/g; // XML is case-sensitive; also avoids lower-casing the whole document per item
   let m: RegExpExecArray | null;
   while ((m = re.exec(xml)) && out.length < MAX_FEED_ITEMS) {
-    const end = xml.toLowerCase().indexOf(`</${m[1].toLowerCase()}>`, m.index);
+    const end = xml.indexOf(`</${m[1]}>`, m.index);
     if (end < 0) break; // truncated by the byte cap
     const block = xml.slice(m.index, Math.min(end, m.index + MAX_BLOCK));
     re.lastIndex = end;
