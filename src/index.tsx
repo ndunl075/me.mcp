@@ -36,6 +36,7 @@ import { handleNetworkMcp, handlePersonMcp } from "./mcp";
 import type { Ctx } from "./views/layout";
 import { Layout } from "./views/layout";
 import { Landing } from "./views/landing";
+import { iconResponse } from "./views/icons";
 import { ProfilePage } from "./views/profile";
 import { EditorPage } from "./views/editor";
 
@@ -49,6 +50,12 @@ export function createApp(base: string) {
     repoUrl: c.env.GITHUB_REPO_URL,
     session: c.get("session"),
   });
+
+  // ---- icons (before the session middleware: no cookie verification or DB work for static assets) ----
+  app.get("/favicon.svg", (c) => iconResponse("svg", c.req.query("v") !== undefined));
+  app.get("/favicon-32.png", (c) => iconResponse("png32", c.req.query("v") !== undefined));
+  app.get("/favicon.ico", () => iconResponse("png32", false));
+  app.get("/apple-touch-icon.png", (c) => iconResponse("apple", c.req.query("v") !== undefined));
 
   app.use("*", async (c, next) => {
     c.set("session", await verifySession(c.env, getCookie(c, SESSION_COOKIE)));

@@ -67,10 +67,9 @@ export function Layout(props: {
         <meta name="twitter:title" content={props.title} />
         <meta name="twitter:description" content={props.description} />
         {props.image && <meta name="twitter:image" content={props.image} />}
-        <link
-          rel="icon"
-          href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231c1c1c'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-size='13' fill='white'%3Eme%3C/text%3E%3C/svg%3E"
-        />
+        <link rel="icon" type="image/svg+xml" href={`${ctx.base}/favicon.svg?v=1`} />
+        <link rel="icon" type="image/png" sizes="32x32" href={`${ctx.base}/favicon-32.png?v=1`} />
+        <link rel="apple-touch-icon" href={`${ctx.base}/apple-touch-icon.png?v=1`} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
         <link
