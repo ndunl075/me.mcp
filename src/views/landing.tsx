@@ -19,6 +19,9 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
       ctx={ctx}
       title="me.mcp: turn yourself into an MCP server"
       description="One link that lets every AI agent know the up-to-date you. Free and open source."
+      image={`${ctx.publicUrl}/card.png`}
+      imageAlt="me.mcp: turn yourself into an MCP server"
+      twitterCard="summary_large_image"
       canonical={ctx.publicUrl + "/"}
     >
       <section class="hero wrap">
