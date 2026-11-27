@@ -45,11 +45,15 @@ export function Layout(props: {
   title: string;
   description: string;
   image?: string;
+  /** "summary_large_image" for a 1200x630 card (also adds og:image width/height); defaults to the small "summary" card. */
+  twitterCard?: "summary" | "summary_large_image";
+  imageAlt?: string;
   canonical?: string;
   head?: Child;
   children: Child;
 }) {
   const { ctx } = props;
+  const large = props.twitterCard === "summary_large_image";
   return (
     <html lang="en">
       <head>
@@ -63,10 +67,14 @@ export function Layout(props: {
         <meta property="og:type" content="website" />
         {props.canonical && <meta property="og:url" content={props.canonical} />}
         {props.image && <meta property="og:image" content={props.image} />}
-        <meta name="twitter:card" content="summary" />
+        {props.image && large && <meta property="og:image:width" content="1200" />}
+        {props.image && large && <meta property="og:image:height" content="630" />}
+        {props.image && props.imageAlt && <meta property="og:image:alt" content={props.imageAlt} />}
+        <meta name="twitter:card" content={props.twitterCard ?? "summary"} />
         <meta name="twitter:title" content={props.title} />
         <meta name="twitter:description" content={props.description} />
         {props.image && <meta name="twitter:image" content={props.image} />}
+        {props.image && props.imageAlt && <meta name="twitter:image:alt" content={props.imageAlt} />}
         <link rel="icon" type="image/svg+xml" href={`${ctx.base}/favicon.svg?v=1`} />
         <link rel="icon" type="image/png" sizes="32x32" href={`${ctx.base}/favicon-32.png?v=1`} />
         <link rel="apple-touch-icon" href={`${ctx.base}/apple-touch-icon.png?v=1`} />

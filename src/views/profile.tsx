@@ -1,5 +1,6 @@
 import type { Profile, Stats } from "../db";
 import { type Ctx, Layout, CopyIcon, XIcon } from "./layout";
+import { SHARE_CARD_JS, cardDataJson } from "./sharecard";
 
 function ago(sqlite: string): string {
   const t = Date.parse(sqlite.replace(" ", "T") + "Z");
@@ -11,7 +12,25 @@ function ago(sqlite: string): string {
   return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function ProfilePage({ ctx, p, stats, isOwner, welcome = false }: { ctx: Ctx; p: Profile; stats: Stats; isOwner: boolean; welcome?: boolean }) {
+export function ProfilePage({
+  ctx,
+  p,
+  stats,
+  isOwner,
+  welcome = false,
+  cardVersion = null,
+  drawVersion = null,
+}: {
+  ctx: Ctx;
+  p: Profile;
+  stats: Stats;
+  isOwner: boolean;
+  welcome?: boolean;
+  /** Version (hash of the drawn fields) of the stored share card, or null when the profile has no card yet. */
+  cardVersion?: string | null;
+  /** Set only when the owner's browser should draw and upload a card: the version it will be stamped with. */
+  drawVersion?: string | null;
+}) {
   const page = `${ctx.publicUrl}/${p.handle}`;
   const mcp = `${page}/mcp`;
   const name = p.name || p.handle;
@@ -22,9 +41,12 @@ export function ProfilePage({ ctx, p, stats, isOwner, welcome = false }: { ctx: 
     encodeURIComponent(btoa(JSON.stringify({ url: mcp })));
   const tweet =
     "https://x.com/intent/post?text=" +
-    encodeURIComponent(`I'm an MCP server now 🤖\n\nAsk your AI about me — add this to Claude, ChatGPT or Cursor:\n${mcp}\n\nMake yours:`) +
+    encodeURIComponent(`I'm an MCP server now 🤖\n\nAsk your AI about me — add this to Claude, ChatGPT or Cursor:\n${mcp}`) +
+    // The profile page is the last link in the tweet, so X unfurls its share card.
     "&url=" +
-    encodeURIComponent(ctx.publicUrl + "/");
+    encodeURIComponent(page);
+  // Share card (X / Open Graph unfurl image). The URL carries the stored card's version, so each new card gets a new URL.
+  const cardUrl = `${page}/card.png?v=${cardVersion ?? "0"}`;
   const maxClient = Math.max(1, ...stats.clients.map((c) => c.count));
 
   return (
@@ -32,7 +54,9 @@ export function ProfilePage({ ctx, p, stats, isOwner, welcome = false }: { ctx: 
       ctx={ctx}
       title={`${name} (@${p.handle}) — me.mcp`}
       description={p.headline || `${name} is an MCP server. Add them to your AI.`}
-      image={p.avatar_url}
+      image={cardUrl}
+      imageAlt={`${name} (@${p.handle}) on me.mcp`}
+      twitterCard="summary_large_image"
       canonical={page}
       head={<link rel="alternate" type="text/markdown" href={`${page}/llms.txt`} />}
     >
@@ -241,6 +265,27 @@ export function ProfilePage({ ctx, p, stats, isOwner, welcome = false }: { ctx: 
           </aside>
         </div>
       </div>
+      {drawVersion && (
+        <>
+          <script
+            type="application/json"
+            id="share-card-data"
+            dangerouslySetInnerHTML={{
+              __html: cardDataJson({
+                handle: p.handle,
+                name: p.name,
+                headline: p.headline,
+                location: p.location,
+                now: p.now,
+                avatar: p.avatar_url,
+                display: page.replace(/^https?:\/\//, ""),
+                post: `${ctx.base}/edit/card?v=${drawVersion}`,
+              }),
+            }}
+          />
+          <script dangerouslySetInnerHTML={{ __html: SHARE_CARD_JS }} />
+        </>
+      )}
     </Layout>
   );
 }
