@@ -53,11 +53,11 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
 
         <div class="ctas">
           <a class="btn btn-dark btn-lg" href={start}>
-            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP server"}
+            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP"}
           </a>
           {example && (
             <a class="btn btn-light btn-lg" href={`${b}/${example}`}>
-              See a live server
+              See an example
             </a>
           )}
         </div>
@@ -371,7 +371,7 @@ export function Landing({ ctx, top, fresh }: { ctx: Ctx; top: LeaderRow[]; fresh
           <h2 class="display">Become an MCP server</h2>
           <p>Takes about a minute. Costs nothing. Ever.</p>
           <a class="btn btn-light btn-lg" href={start}>
-            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP server"}
+            <GithubIcon size={22} /> {ctx.session ? "Edit your server" : "Create my MCP"}
           </a>
         </div>
       </div>
