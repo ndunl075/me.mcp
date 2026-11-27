@@ -290,6 +290,8 @@ export async function deleteProfile(db: D1Database, handle: string): Promise<voi
     db.prepare("DELETE FROM profiles WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM call_daily WHERE handle = ?").bind(handle),
     db.prepare("DELETE FROM call_clients WHERE handle = ?").bind(handle),
+    db.prepare("DELETE FROM activity WHERE handle = ?").bind(handle),
+    db.prepare("DELETE FROM sources WHERE handle = ?").bind(handle),
   ]);
 }
 
@@ -387,4 +389,9 @@ export async function searchPeople(db: D1Database, query: string, limit = 10): P
     .bind(...terms.map((t) => `%${t.replace(/[%_]/g, "")}%`), limit)
     .all();
   return results.map(toProfile);
+}
+
+/** True when `u` passes the same http(s)-only, no-whitespace/invisible-characters check as profile link URLs. */
+export function isCleanUrl(u: string): boolean {
+  return httpUrl.safeParse(u).success;
 }

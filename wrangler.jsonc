@@ -5,6 +5,8 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Refreshes recent public activity for the stalest few published profiles (src/activity.ts, REFRESH_BATCH per run).
+  "triggers": { "crons": ["*/30 * * * *"] },
   "vars": {
     // Public URL the app is served at (no trailing slash). Its path becomes the base path.
     // e.g. "https://www.usefrontierdigital.com/me" or "https://me-mcp.<you>.workers.dev/me"
